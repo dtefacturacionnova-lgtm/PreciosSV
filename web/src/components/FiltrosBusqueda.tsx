@@ -32,6 +32,7 @@ const SUPERMERCADOS = [
   { key: 'donjuan', label: 'Don Juan', color: '#16A34A' },
   { key: 'maxidespensa', label: 'Maxi Despensa', color: '#EA580C' },
   { key: 'familiar', label: 'Familiar', color: '#7C3AED' },
+  { key: 'pricesmart', label: 'PriceSmart', color: '#0051A5' },
 ]
 
 export default function FiltrosBusqueda() {

@@ -1,6 +1,6 @@
 export type Json = string | number | boolean | null | { [key: string]: Json } | Json[]
 
-export type SupermercadoKey = 'selectos' | 'walmart' | 'donjuan' | 'maxidespensa' | 'familiar'
+export type SupermercadoKey = 'selectos' | 'walmart' | 'donjuan' | 'maxidespensa' | 'familiar' | 'pricesmart'
 export type UserRole = 'admin' | 'proveedor' | 'usuario'
 export type AlertaTipo = 'oferta_competencia' | 'precio_minimo' | 'posicion_perdida' | 'sin_stock_competidor'
 

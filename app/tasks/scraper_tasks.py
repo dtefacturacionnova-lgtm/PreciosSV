@@ -78,7 +78,7 @@ def scrape_todos(self):
     resultados = {}
 
     # Scrapers a ejecutar (en orden de prioridad)
-    supermercados = ["selectos", "walmart", "donjuan", "maxidespensa", "familiar"]
+    supermercados = ["selectos", "walmart", "donjuan", "maxidespensa", "familiar", "pricesmart"]
 
     for super_key in supermercados:
         try:
@@ -145,6 +145,9 @@ async def _ejecutar_scrape(supermercado_key: str) -> dict:
         try:
             if supermercado_key == "selectos":
                 scraper = ScraperSelectos()
+            elif supermercado_key == "pricesmart":
+                from app.scrapers.pricesmart import ScraperPriceSmart
+                scraper = ScraperPriceSmart()
             else:
                 scraper = ScraperVTEX(supermercado_key)
 
