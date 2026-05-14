@@ -1,20 +1,23 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
 
-export const revalidate = 0
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    // ── 1. Verificar sesión del usuario (con anon key + JWT) ──
     const supabase = await createClient()
-
-    // Verificar sesión
     const { data: { user }, error: eAuth } = await supabase.auth.getUser()
     if (eAuth || !user) {
       return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
     }
 
-    // Obtener perfil + proveedor
-    const { data: usuarioRaw } = await supabase
+    // ── 2. Lookups internos con service role (bypasa RLS) ────
+    //    Seguro porque ya verificamos la sesión arriba.
+    const db = createServiceClient()
+
+    const { data: usuarioRaw } = await db
       .from('usuarios')
       .select('id, nombre, rol')
       .eq('auth_id', user.id)
@@ -26,7 +29,7 @@ export async function GET() {
       return NextResponse.json({ error: 'Acceso denegado' }, { status: 403 })
     }
 
-    const { data: proveedorRaw } = await supabase
+    const { data: proveedorRaw } = await db
       .from('proveedores')
       .select('id, razon_social, marcas')
       .eq('usuario_id', usuario.id)
@@ -35,10 +38,17 @@ export async function GET() {
 
     if (!proveedor) return NextResponse.json({ error: 'Proveedor no registrado' }, { status: 404 })
 
-    const marcas = proveedor.marcas ?? []
+    const marcas: string[] = proveedor.marcas ?? []
+    if (marcas.length === 0) {
+      return NextResponse.json({
+        proveedor: { razon_social: proveedor.razon_social, marcas: [] },
+        metricas: { productos_activos: 0, productos_con_precio: 0, ofertas_activas: 0, tiendas_presencia: 0, descuento_promedio: null },
+        tabla: [],
+      })
+    }
 
-    // ── Productos del proveedor ───────────────────────────────
-    const { data: productosRaw } = await supabase
+    // ── 3. Productos del proveedor ────────────────────────────
+    const { data: productosRaw } = await db
       .from('productos')
       .select(`
         id, nombre_normalizado, marca, imagen_url, activo,
@@ -54,7 +64,7 @@ export async function GET() {
 
     const productosData = (productosRaw as any[] | null) ?? []
 
-    // ── Métricas ──────────────────────────────────────────────
+    // ── 4. Métricas ───────────────────────────────────────────
     let totalOfertas = 0
     let totalProductosConPrecio = 0
     const tiendasSet = new Set<string>()
@@ -73,14 +83,14 @@ export async function GET() {
     }
 
     const metricas = {
-      productos_activos:  productosData.length,
+      productos_activos:    productosData.length,
       productos_con_precio: totalProductosConPrecio,
-      ofertas_activas:    totalOfertas,
-      tiendas_presencia:  tiendasSet.size,
-      descuento_promedio: countDescuentos ? +(sumDescuentos / countDescuentos).toFixed(1) : null,
+      ofertas_activas:      totalOfertas,
+      tiendas_presencia:    tiendasSet.size,
+      descuento_promedio:   countDescuentos ? +(sumDescuentos / countDescuentos).toFixed(1) : null,
     }
 
-    // ── Tabla de productos con precios por tienda ─────────────
+    // ── 5. Tabla de productos con precios por tienda ──────────
     const tabla = productosData.map(prod => {
       const precios = (prod.precios_actuales ?? []) as any[]
       const precioMinObj = precios.reduce((min: any, p: any) => {
@@ -90,17 +100,17 @@ export async function GET() {
       }, null)
 
       return {
-        id:                 prod.id,
-        nombre:             prod.nombre_normalizado,
-        marca:              prod.marca,
-        imagen_url:         prod.imagen_url,
-        categoria:          (prod.categorias as any)?.nombre ?? null,
-        precio_min:         precioMinObj ? +(precioMinObj.precio_oferta ?? precioMinObj.precio_normal) : null,
-        en_oferta:          precios.some((p: any) => p.en_oferta),
-        descuento_max:      precios.reduce((m: number, p: any) => Math.max(m, p.descuento_pct ?? 0), 0) || null,
-        tiendas:            precios.length,
-        tienda_mas_barata:  precioMinObj ? (precioMinObj.supermercados as any)?.nombre : null,
-        color_mas_barata:   precioMinObj ? (precioMinObj.supermercados as any)?.color_hex : null,
+        id:                prod.id,
+        nombre:            prod.nombre_normalizado,
+        marca:             prod.marca,
+        imagen_url:        prod.imagen_url,
+        categoria:         (prod.categorias as any)?.nombre ?? null,
+        precio_min:        precioMinObj ? +(precioMinObj.precio_oferta ?? precioMinObj.precio_normal) : null,
+        en_oferta:         precios.some((p: any) => p.en_oferta),
+        descuento_max:     precios.reduce((m: number, p: any) => Math.max(m, p.descuento_pct ?? 0), 0) || null,
+        tiendas:           precios.length,
+        tienda_mas_barata: precioMinObj ? (precioMinObj.supermercados as any)?.nombre : null,
+        color_mas_barata:  precioMinObj ? (precioMinObj.supermercados as any)?.color_hex : null,
         precios_por_tienda: precios.map((p: any) => ({
           supermercado:  (p.supermercados as any)?.nombre,
           key:           (p.supermercados as any)?.nombre_corto,
