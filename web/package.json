@@ -19,7 +19,7 @@
     "recharts": "^3.8.1"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": "22.x"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
