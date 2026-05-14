@@ -88,7 +88,7 @@ class ScraperSelectos:
     async def _scrape_categoria(self, page: Page, categoria: str) -> None:
         url = f"{BASE_URL}/Tienda/Catalogo/{categoria}"
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30_000)
+            await page.goto(url, wait_until="networkidle", timeout=60_000)
 
             # Hacer scroll para activar lazy-loading de productos
             await self._scroll_completo(page)
