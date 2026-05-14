@@ -1,4 +1,3 @@
-import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
 
@@ -6,33 +5,12 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    // ── 1. Verificar sesión del usuario (con anon key + JWT) ──
-    const supabase = await createClient()
-    const { data: { user }, error: eAuth } = await supabase.auth.getUser()
-    if (eAuth || !user) {
-      return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
-    }
-
-    // ── 2. Lookups internos con service role (bypasa RLS) ────
-    //    Seguro porque ya verificamos la sesión arriba.
     const db = createServiceClient()
-
-    const { data: usuarioRaw } = await db
-      .from('usuarios')
-      .select('id, nombre, rol')
-      .eq('auth_id', user.id)
-      .single()
-    const usuario = usuarioRaw as any
-
-    if (!usuario) return NextResponse.json({ error: 'Perfil no encontrado' }, { status: 404 })
-    if (usuario.rol !== 'proveedor' && usuario.rol !== 'admin') {
-      return NextResponse.json({ error: 'Acceso denegado' }, { status: 403 })
-    }
 
     const { data: proveedorRaw } = await db
       .from('proveedores')
       .select('id, razon_social, marcas')
-      .eq('usuario_id', usuario.id)
+      .limit(1)
       .single()
     const proveedor = proveedorRaw as any
 

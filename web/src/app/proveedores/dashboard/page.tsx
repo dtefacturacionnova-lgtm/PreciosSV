@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   Package, Tag, Store, TrendingDown,
-  RefreshCw, LogIn, Building2, BarChart2, ShoppingBag,
+  RefreshCw, Building2, BarChart2, ShoppingBag,
   ShieldCheck, LineChart, Lightbulb,
 } from 'lucide-react'
 import MetricaCard from '@/components/proveedores/MetricaCard'
@@ -164,10 +164,7 @@ export default function DashboardProveedorPage() {
   useEffect(() => {
     fetch('/api/proveedores/dashboard')
       .then(async res => {
-        if (res.status === 401) throw new Error('NO_AUTH')
-        if (res.status === 403) throw new Error('NO_ROL')
-        if (res.status === 404) throw new Error('NO_PROVEEDOR')
-        if (!res.ok)            throw new Error('ERROR')
+        if (!res.ok) throw new Error('ERROR')
         return res.json()
       })
       .then(setData)
@@ -181,50 +178,6 @@ export default function DashboardProveedorPage() {
       <div className="max-w-6xl mx-auto px-4 py-20 flex flex-col items-center gap-3 text-slate-400">
         <RefreshCw className="w-6 h-6 animate-spin" />
         <p className="text-sm">Cargando dashboard…</p>
-      </div>
-    )
-  }
-
-  if (error === 'NO_AUTH') {
-    return (
-      <div className="max-w-md mx-auto px-4 py-20 text-center">
-        <LogIn className="w-10 h-10 text-slate-300 mx-auto mb-4" />
-        <h2 className="text-lg font-semibold text-slate-800 mb-2">Inicia sesión</h2>
-        <p className="text-sm text-slate-500 mb-6">
-          Necesitas una cuenta para acceder al panel de proveedores.
-        </p>
-        <Link
-          href="/auth/login?next=/proveedores/dashboard"
-          className="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          <LogIn className="w-4 h-4" /> Iniciar sesión
-        </Link>
-      </div>
-    )
-  }
-
-  if (error === 'NO_ROL') {
-    return (
-      <div className="max-w-md mx-auto px-4 py-20 text-center">
-        <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-4" />
-        <h2 className="text-lg font-semibold text-slate-800 mb-2">Acceso exclusivo para proveedores</h2>
-        <p className="text-sm text-slate-500 mb-6">
-          Tu cuenta no tiene el rol de proveedor. Contáctanos para habilitarlo.
-        </p>
-        <Link href="/" className="text-blue-600 text-sm hover:underline">← Volver al inicio</Link>
-      </div>
-    )
-  }
-
-  if (error === 'NO_PROVEEDOR') {
-    return (
-      <div className="max-w-md mx-auto px-4 py-20 text-center">
-        <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-4" />
-        <h2 className="text-lg font-semibold text-slate-800 mb-2">Perfil de proveedor no configurado</h2>
-        <p className="text-sm text-slate-500 mb-6">
-          Aún no tienes un perfil de proveedor. Contacta al equipo de PreciosSV.
-        </p>
-        <Link href="/" className="text-blue-600 text-sm hover:underline">← Volver al inicio</Link>
       </div>
     )
   }

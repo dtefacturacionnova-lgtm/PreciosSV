@@ -2,25 +2,16 @@
  * PATCH /api/proveedores/config
  * Actualiza: competidores[], precio_sugerido por producto
  */
-import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
 async function getProveedor() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return null
-
   const db = createServiceClient()
-  const { data: uRaw } = await db.from('usuarios').select('id,rol').eq('auth_id', user.id).single()
-  const u = uRaw as any
-  if (!u || (u.rol !== 'proveedor' && u.rol !== 'admin')) return null
-
-  const { data: pRaw } = await db.from('proveedores').select('id,marcas,competidores').eq('usuario_id', u.id).single()
+  const { data: pRaw } = await db.from('proveedores').select('id,marcas,competidores').limit(1).single()
   const p = pRaw as any
-  return p ? { ...p, usuario: u } : null
+  return p ?? null
 }
 
 // GET — devuelve config actual (competidores + precios referencia)

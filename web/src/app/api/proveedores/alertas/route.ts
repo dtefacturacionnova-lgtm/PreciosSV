@@ -11,7 +11,6 @@
  *   - duracion_promedio_dias: duración media de ofertas anteriores (períodos cerrados)
  *   - productos_propios_afectados: cuántos productos propios compiten en la misma categoría
  */
-import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
 
@@ -19,21 +18,12 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
-
     const db = createServiceClient()
-
-    const { data: uRaw } = await db.from('usuarios').select('id,rol').eq('auth_id', user.id).single()
-    const u = uRaw as any
-    if (!u || (u.rol !== 'proveedor' && u.rol !== 'admin'))
-      return NextResponse.json({ error: 'Acceso denegado' }, { status: 403 })
 
     const { data: pRaw } = await db
       .from('proveedores')
       .select('id,marcas,competidores')
-      .eq('usuario_id', u.id)
+      .limit(1)
       .single()
     const prov = pRaw as any
     if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
