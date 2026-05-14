@@ -17,6 +17,8 @@ engine = create_async_engine(
     max_overflow=settings.database_max_overflow,
     echo=settings.debug,
     pool_pre_ping=True,         # reconecta si la conexión cayó
+    # Supabase Transaction Pooler (pgbouncer) no soporta prepared statements
+    connect_args={"statement_cache_size": 0},
 )
 
 AsyncSessionLocal = async_sessionmaker(
