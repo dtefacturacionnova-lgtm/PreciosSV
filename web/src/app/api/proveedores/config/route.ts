@@ -14,11 +14,13 @@ async function getProveedor() {
   if (!user) return null
 
   const db = createServiceClient()
-  const { data: u } = await db.from('usuarios').select('id,rol').eq('auth_id', user.id).single()
+  const { data: uRaw } = await db.from('usuarios').select('id,rol').eq('auth_id', user.id).single()
+  const u = uRaw as any
   if (!u || (u.rol !== 'proveedor' && u.rol !== 'admin')) return null
 
-  const { data: p } = await db.from('proveedores').select('id,marcas,competidores').eq('usuario_id', (u as any).id).single()
-  return p ? { ...(p as any), usuario: u } : null
+  const { data: pRaw } = await db.from('proveedores').select('id,marcas,competidores').eq('usuario_id', u.id).single()
+  const p = pRaw as any
+  return p ? { ...p, usuario: u } : null
 }
 
 // GET — devuelve config actual (competidores + precios referencia)
