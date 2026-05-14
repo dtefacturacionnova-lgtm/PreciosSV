@@ -4,10 +4,15 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   Package, Tag, Store, TrendingDown,
-  RefreshCw, LogIn, Building2, BarChart2, ShoppingBag
+  RefreshCw, LogIn, Building2, BarChart2, ShoppingBag,
+  ShieldCheck, LineChart,
 } from 'lucide-react'
 import MetricaCard from '@/components/proveedores/MetricaCard'
 import TablaProductos from '@/components/proveedores/TablaProductos'
+import CumplimientoPrecios from '@/components/proveedores/CumplimientoPrecios'
+import InteligenciaMercado from '@/components/proveedores/InteligenciaMercado'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Metrica {
   productos_activos:     number
@@ -23,6 +28,10 @@ interface DashboardData {
   tabla:     any[]
 }
 
+type Tab = 'catalogo' | 'cumplimiento' | 'mercado'
+
+// ─── Sub-componente: barra de cobertura ──────────────────────────────────────
+
 function CoberturaBarra({ label, valor, max, color }: {
   label: string; valor: number; max: number; color: string
 }) {
@@ -31,7 +40,9 @@ function CoberturaBarra({ label, valor, max, color }: {
     <div className="mb-3">
       <div className="flex justify-between items-center mb-1">
         <span className="text-sm text-slate-600">{label}</span>
-        <span className="text-sm font-semibold text-slate-800">{valor} <span className="text-slate-400 font-normal text-xs">/ {max}</span></span>
+        <span className="text-sm font-semibold text-slate-800">
+          {valor} <span className="text-slate-400 font-normal text-xs">/ {max}</span>
+        </span>
       </div>
       <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
         <div
@@ -43,10 +54,111 @@ function CoberturaBarra({ label, valor, max, color }: {
   )
 }
 
+// ─── Tab: Catálogo ───────────────────────────────────────────────────────────
+
+function TabCatalogo({ metricas, tabla }: { metricas: Metrica; tabla: any[] }) {
+  const SUPERMERCADOS_TOTALES = 5
+
+  return (
+    <>
+      {/* Cobertura + estado */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+
+        <div className="md:col-span-1 bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <BarChart2 className="w-4 h-4 text-slate-500" />
+            <h2 className="text-sm font-semibold text-slate-700">Presencia por cadena</h2>
+          </div>
+          {(() => {
+            const conteo: Record<string, { nombre: string; color: string; count: number }> = {}
+            for (const prod of tabla) {
+              for (const p of prod.precios_por_tienda) {
+                if (!conteo[p.key]) conteo[p.key] = { nombre: p.supermercado, color: p.color, count: 0 }
+                conteo[p.key].count++
+              }
+            }
+            const entradas = Object.values(conteo).sort((a, b) => b.count - a.count)
+            const maxCount = entradas[0]?.count ?? 1
+            return entradas.length ? (
+              entradas.map(e => (
+                <CoberturaBarra key={e.nombre} label={e.nombre} valor={e.count} max={maxCount} color={e.color} />
+              ))
+            ) : (
+              <p className="text-xs text-slate-400">Sin datos de tiendas aún</p>
+            )
+          })()}
+        </div>
+
+        <div className="md:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Package className="w-4 h-4 text-slate-500" />
+            <h2 className="text-sm font-semibold text-slate-700">Estado del catálogo</h2>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              {
+                label: 'Con precio registrado',
+                valor: metricas.productos_con_precio,
+                total: metricas.productos_activos,
+                color: '#1D4ED8',
+              },
+              {
+                label: 'En oferta ahora',
+                valor: metricas.ofertas_activas,
+                total: metricas.productos_activos * metricas.tiendas_presencia || 1,
+                color: '#F59E0B',
+              },
+            ].map(item => {
+              const pct = item.total > 0 ? Math.round((item.valor / item.total) * 100) : 0
+              return (
+                <div key={item.label} className="bg-slate-50 rounded-xl p-4">
+                  <p className="text-xs text-slate-500 mb-2">{item.label}</p>
+                  <p className="text-2xl font-bold" style={{ color: item.color }}>{item.valor}</p>
+                  <div className="mt-2 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: item.color }} />
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">{pct}% del total</p>
+                </div>
+              )
+            })}
+          </div>
+          {metricas.descuento_promedio && (
+            <div className="mt-4 bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-center gap-3">
+              <TrendingDown className="w-5 h-5 text-amber-600 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-amber-800">
+                  Descuento promedio: {metricas.descuento_promedio}%
+                </p>
+                <p className="text-xs text-amber-600">
+                  Sobre {metricas.ofertas_activas} oferta{metricas.ofertas_activas !== 1 ? 's' : ''} activa{metricas.ofertas_activas !== 1 ? 's' : ''}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Tabla de productos */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-slate-700">
+            Catálogo de productos ({tabla.length})
+          </h2>
+          <p className="text-xs text-slate-400">Haz clic en una fila para ver precios por tienda</p>
+        </div>
+        <TablaProductos productos={tabla} />
+      </div>
+    </>
+  )
+}
+
+// ─── Página principal ─────────────────────────────────────────────────────────
+
 export default function DashboardProveedorPage() {
-  const [data, setData]         = useState<DashboardData | null>(null)
+  const [data,     setData]     = useState<DashboardData | null>(null)
   const [cargando, setCargando] = useState(true)
-  const [error, setError]       = useState<string | null>(null)
+  const [error,    setError]    = useState<string | null>(null)
+  const [tab,      setTab]      = useState<Tab>('catalogo')
 
   useEffect(() => {
     fetch('/api/proveedores/dashboard')
@@ -54,7 +166,7 @@ export default function DashboardProveedorPage() {
         if (res.status === 401) throw new Error('NO_AUTH')
         if (res.status === 403) throw new Error('NO_ROL')
         if (res.status === 404) throw new Error('NO_PROVEEDOR')
-        if (!res.ok) throw new Error('ERROR')
+        if (!res.ok)            throw new Error('ERROR')
         return res.json()
       })
       .then(setData)
@@ -62,6 +174,7 @@ export default function DashboardProveedorPage() {
       .finally(() => setCargando(false))
   }, [])
 
+  // ── Estados de error ───────────────────────────────────────────
   if (cargando) {
     return (
       <div className="max-w-6xl mx-auto px-4 py-20 flex flex-col items-center gap-3 text-slate-400">
@@ -125,7 +238,13 @@ export default function DashboardProveedorPage() {
   }
 
   const { proveedor, metricas, tabla } = data
-  const SUPERMERCADOS_TOTALES = 5
+
+  // ── Tabs config ────────────────────────────────────────────────
+  const TABS: { id: Tab; label: string; icon: typeof ShoppingBag; desc: string }[] = [
+    { id: 'catalogo',    label: 'Catálogo',                icon: ShoppingBag,  desc: 'Productos y precios actuales' },
+    { id: 'cumplimiento',label: 'Cumplimiento de PVP',     icon: ShieldCheck,  desc: 'Verifica que los supers respeten tu precio sugerido' },
+    { id: 'mercado',     label: 'Inteligencia de Mercado', icon: LineChart,     desc: 'Compara tus marcas vs. competidores' },
+  ]
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
@@ -140,7 +259,7 @@ export default function DashboardProveedorPage() {
         {proveedor.marcas.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-2">
             {proveedor.marcas.map(m => (
-              <span key={m} className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full font-medium">
+              <span key={m} className="text-xs bg-blue-100 text-blue-700 px-2.5 py-1 rounded-full font-medium">
                 {m}
               </span>
             ))}
@@ -148,8 +267,8 @@ export default function DashboardProveedorPage() {
         )}
       </div>
 
-      {/* Métricas */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      {/* Métricas globales */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <MetricaCard
           icono={ShoppingBag}
           label="Productos activos"
@@ -167,7 +286,7 @@ export default function DashboardProveedorPage() {
         <MetricaCard
           icono={Store}
           label="Tiendas con presencia"
-          valor={`${metricas.tiendas_presencia} / ${SUPERMERCADOS_TOTALES}`}
+          valor={`${metricas.tiendas_presencia} / 5`}
           color="emerald"
         />
         <MetricaCard
@@ -179,107 +298,41 @@ export default function DashboardProveedorPage() {
         />
       </div>
 
-      {/* Cobertura por supermercado */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-
-        {/* Distribución de ofertas */}
-        <div className="md:col-span-1 bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <BarChart2 className="w-4 h-4 text-slate-500" />
-            <h2 className="text-sm font-semibold text-slate-700">Presencia por cadena</h2>
-          </div>
-
-          {(() => {
-            const conteo: Record<string, { nombre: string; color: string; count: number }> = {}
-            for (const prod of tabla) {
-              for (const p of prod.precios_por_tienda) {
-                if (!conteo[p.key]) conteo[p.key] = { nombre: p.supermercado, color: p.color, count: 0 }
-                conteo[p.key].count++
-              }
-            }
-            const entradas = Object.values(conteo).sort((a, b) => b.count - a.count)
-            const maxCount = entradas[0]?.count ?? 1
-            return entradas.length ? (
-              entradas.map(e => (
-                <CoberturaBarra
-                  key={e.nombre}
-                  label={e.nombre}
-                  valor={e.count}
-                  max={maxCount}
-                  color={e.color}
-                />
-              ))
-            ) : (
-              <p className="text-xs text-slate-400">Sin datos de tiendas aún</p>
-            )
-          })()}
-        </div>
-
-        {/* Resumen de estado */}
-        <div className="md:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <Package className="w-4 h-4 text-slate-500" />
-            <h2 className="text-sm font-semibold text-slate-700">Estado del catálogo</h2>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {[
-              {
-                label: 'Con precio registrado',
-                valor: metricas.productos_con_precio,
-                total: metricas.productos_activos,
-                color: '#1D4ED8',
-              },
-              {
-                label: 'En oferta ahora',
-                valor: metricas.ofertas_activas,
-                total: metricas.productos_activos * metricas.tiendas_presencia || 1,
-                color: '#F59E0B',
-              },
-            ].map(item => {
-              const pct = item.total > 0 ? Math.round((item.valor / item.total) * 100) : 0
-              return (
-                <div key={item.label} className="bg-slate-50 rounded-xl p-4">
-                  <p className="text-xs text-slate-500 mb-2">{item.label}</p>
-                  <p className="text-2xl font-bold" style={{ color: item.color }}>{item.valor}</p>
-                  <div className="mt-2 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full"
-                      style={{ width: `${pct}%`, backgroundColor: item.color }}
-                    />
-                  </div>
-                  <p className="text-xs text-slate-400 mt-1">{pct}% del total</p>
-                </div>
-              )
-            })}
-          </div>
-
-          {metricas.descuento_promedio && (
-            <div className="mt-4 bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-center gap-3">
-              <TrendingDown className="w-5 h-5 text-amber-600 flex-shrink-0" />
-              <div>
-                <p className="text-sm font-semibold text-amber-800">
-                  Descuento promedio: {metricas.descuento_promedio}%
-                </p>
-                <p className="text-xs text-amber-600">
-                  Sobre {metricas.ofertas_activas} oferta{metricas.ofertas_activas !== 1 ? 's' : ''} activa{metricas.ofertas_activas !== 1 ? 's' : ''}
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
+      {/* Tabs */}
+      <div className="flex gap-1 bg-slate-100 rounded-2xl p-1 mb-6">
+        {TABS.map(t => {
+          const Icono = t.icon
+          const activo = tab === t.id
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`
+                flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium transition-all
+                ${activo
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'}
+              `}
+            >
+              <Icono className="w-4 h-4 flex-shrink-0" />
+              <span className="hidden sm:inline">{t.label}</span>
+            </button>
+          )
+        })}
       </div>
 
-      {/* Tabla de productos */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-slate-700">
-            Catálogo de productos ({tabla.length})
-          </h2>
-          <p className="text-xs text-slate-400">Haz clic en una fila para ver precios por tienda</p>
-        </div>
-        <TablaProductos productos={tabla} />
-      </div>
+      {/* Descripción del tab activo */}
+      {(() => {
+        const t = TABS.find(t => t.id === tab)
+        return t ? (
+          <p className="text-xs text-slate-400 mb-4">{t.desc}</p>
+        ) : null
+      })()}
+
+      {/* Contenido del tab */}
+      {tab === 'catalogo'     && <TabCatalogo metricas={metricas} tabla={tabla} />}
+      {tab === 'cumplimiento' && <CumplimientoPrecios />}
+      {tab === 'mercado'      && <InteligenciaMercado />}
 
     </div>
   )
