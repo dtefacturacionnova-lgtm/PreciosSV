@@ -16,7 +16,7 @@ celery[redis]==5.3.6
 flower==2.0.1          # monitoreo de Celery en UI web
 
 # ── Scraping ────────────────────────────────────────────────
-playwright==1.44.0
+playwright==1.49.0
 httpx==0.27.0
 beautifulsoup4==4.12.3
 lxml==5.2.1
