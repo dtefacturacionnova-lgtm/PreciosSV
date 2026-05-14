@@ -177,7 +177,7 @@ function VistaComparativa({
             const totalPreciosKeys = Object.values(a.precio_promedio).filter(Boolean).length
             const totalOfertas     = Object.values(a.ofertas).reduce((s, n) => s + n, 0)
             const avgPrecio        = totalPreciosKeys > 0
-              ? Object.values(a.precio_promedio).filter(Boolean).reduce((s, n) => s + (n ?? 0), 0) / totalPreciosKeys
+              ? Object.values(a.precio_promedio).filter((v): v is number => v !== null && v !== undefined).reduce((s, n) => s + n, 0) / totalPreciosKeys
               : null
             return (
               <div key={marca} className="bg-blue-600 text-white rounded-2xl p-5 shadow-sm">

@@ -50,17 +50,17 @@ export async function PATCH(req: NextRequest) {
 
   // Actualizar competidores
   if (Array.isArray(body.competidores)) {
-    const { error } = await db
+    const { error } = await (db as any)
       .from('proveedores')
       .update({ competidores: body.competidores })
       .eq('id', proveedor.id)
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) return NextResponse.json({ error: (error as any).message }, { status: 500 })
   }
 
   // Upsert precio de referencia para un producto
   if (body.referencia) {
     const { producto_id, precio_sugerido, precio_promo, en_promocion, notas } = body.referencia
-    const { error } = await db
+    const { error } = await (db as any)
       .from('proveedor_precios_referencia')
       .upsert({
         proveedor_id: proveedor.id,
@@ -71,7 +71,7 @@ export async function PATCH(req: NextRequest) {
         notas: notas ?? null,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'proveedor_id,producto_id' })
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) return NextResponse.json({ error: (error as any).message }, { status: 500 })
   }
 
   return NextResponse.json({ ok: true })
