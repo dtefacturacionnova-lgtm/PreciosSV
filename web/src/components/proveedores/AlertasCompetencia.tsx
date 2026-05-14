@@ -3,14 +3,16 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Bell, RefreshCw, Package, ChevronDown, ChevronUp,
-  Zap, Clock, AlertTriangle, Settings,
+  Zap, Clock, AlertTriangle, Settings, Download,
+  TrendingUp, Timer, ShoppingBag,
 } from 'lucide-react'
 import clsx from 'clsx'
 import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type EstadoOferta = 'nueva' | 'reciente' | 'vigente'
+type EstadoOferta   = 'nueva' | 'reciente' | 'vigente'
+type FrecuenciaPromos = 'frecuente' | 'moderada' | 'ocasional'
 
 interface OfertaItem {
   producto_id:   number
@@ -30,29 +32,39 @@ interface OfertaItem {
 }
 
 interface AlertaMarca {
-  marca:   string
-  total:   number
-  ofertas: OfertaItem[]
+  marca:                       string
+  total:                       number
+  frecuencia_promos:           FrecuenciaPromos
+  dias_promo_ultimo_90d:       number
+  duracion_promedio_dias:      number | null
+  productos_propios_afectados: number
+  ofertas:                     OfertaItem[]
 }
 
 interface AlertasData {
-  alertas:           AlertaMarca[]
-  total_ofertas:     number
+  alertas:            AlertaMarca[]
+  total_ofertas:      number
   tiene_competidores: boolean
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const ESTADO_META: Record<EstadoOferta, { label: string; color: string; bg: string; icon: typeof Zap }> = {
-  nueva:    { label: 'Nueva',    color: 'text-red-700',     bg: 'bg-red-100',    icon: Zap   },
-  reciente: { label: 'Reciente', color: 'text-amber-700',   bg: 'bg-amber-100',  icon: Clock },
-  vigente:  { label: 'Vigente',  color: 'text-slate-600',   bg: 'bg-slate-100',  icon: Bell  },
+  nueva:    { label: 'Nueva',    color: 'text-red-700',   bg: 'bg-red-100',   icon: Zap   },
+  reciente: { label: 'Reciente', color: 'text-amber-700', bg: 'bg-amber-100', icon: Clock },
+  vigente:  { label: 'Vigente',  color: 'text-slate-600', bg: 'bg-slate-100', icon: Bell  },
+}
+
+const FRECUENCIA_META: Record<FrecuenciaPromos, { label: string; dot: string; chip: string }> = {
+  frecuente: { label: 'Promociones: frecuentes',  dot: 'bg-red-500',    chip: 'bg-red-50 text-red-700'       },
+  moderada:  { label: 'Promociones: moderadas',   dot: 'bg-amber-400',  chip: 'bg-amber-50 text-amber-700'   },
+  ocasional: { label: 'Promociones: ocasionales', dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700' },
 }
 
 function tiempoRelativo(horas: number | null): string {
   if (horas === null) return ''
-  if (horas < 1)    return 'hace menos de 1 hora'
-  if (horas < 24)   return `hace ${horas}h`
+  if (horas < 1)  return 'hace menos de 1 hora'
+  if (horas < 24) return `hace ${horas}h`
   const dias = Math.floor(horas / 24)
   return `hace ${dias} día${dias !== 1 ? 's' : ''}`
 }
@@ -67,7 +79,7 @@ function TarjetaOferta({ oferta }: { oferta: OfertaItem }) {
   return (
     <div className={clsx(
       'flex items-start gap-3 bg-white border rounded-xl p-3 transition-all',
-      oferta.estado === 'nueva'    ? 'border-red-200 shadow-sm shadow-red-50'   :
+      oferta.estado === 'nueva'    ? 'border-red-200 shadow-sm shadow-red-50'     :
       oferta.estado === 'reciente' ? 'border-amber-200 shadow-sm shadow-amber-50' :
                                      'border-slate-100'
     )}>
@@ -129,11 +141,43 @@ function TarjetaOferta({ oferta }: { oferta: OfertaItem }) {
   )
 }
 
+// ─── Chips de contexto histórico ─────────────────────────────────────────────
+
+function ChipsHistorico({ alerta }: { alerta: AlertaMarca }) {
+  const fm = FRECUENCIA_META[alerta.frecuencia_promos]
+
+  return (
+    <div className="flex flex-wrap gap-2 px-4 pb-3">
+      {/* Frecuencia */}
+      <span className={clsx('inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full', fm.chip)}>
+        <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', fm.dot)} />
+        {fm.label}
+      </span>
+
+      {/* Duración típica */}
+      {alerta.duracion_promedio_dias !== null && (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+          <Timer className="w-3 h-3 flex-shrink-0" />
+          Duración típica: ~{alerta.duracion_promedio_dias} día{alerta.duracion_promedio_dias !== 1 ? 's' : ''}
+        </span>
+      )}
+
+      {/* Productos propios afectados */}
+      {alerta.productos_propios_afectados > 0 && (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-violet-50 text-violet-700">
+          <ShoppingBag className="w-3 h-3 flex-shrink-0" />
+          {alerta.productos_propios_afectados} tuyo{alerta.productos_propios_afectados !== 1 ? 's' : ''} en misma categoría
+        </span>
+      )}
+    </div>
+  )
+}
+
 // ─── Grupo de marca ───────────────────────────────────────────────────────────
 
 function GrupoMarca({ alerta }: { alerta: AlertaMarca }) {
   const [expandido, setExpandido] = useState(true)
-  const nuevas   = alerta.ofertas.filter(o => o.estado === 'nueva').length
+  const nuevas    = alerta.ofertas.filter(o => o.estado === 'nueva').length
   const recientes = alerta.ofertas.filter(o => o.estado === 'reciente').length
 
   return (
@@ -163,6 +207,9 @@ function GrupoMarca({ alerta }: { alerta: AlertaMarca }) {
         </div>
       </button>
 
+      {/* Chips de contexto histórico — siempre visibles */}
+      <ChipsHistorico alerta={alerta} />
+
       {/* Listado */}
       {expandido && (
         <div className="px-4 pb-4 grid gap-2 grid-cols-1 md:grid-cols-2">
@@ -183,10 +230,27 @@ interface Props {
 }
 
 export default function AlertasCompetencia({ sinCompetidores }: Props) {
-  const [data,     setData]     = useState<AlertasData | null>(null)
-  const [cargando, setCargando] = useState(true)
-  const [error,    setError]    = useState<string | null>(null)
-  const [ahora,    setAhora]    = useState<Date>(new Date())
+  const [data,           setData]           = useState<AlertasData | null>(null)
+  const [cargando,       setCargando]       = useState(true)
+  const [error,          setError]          = useState<string | null>(null)
+  const [ahora,          setAhora]          = useState<Date>(new Date())
+  const [cargandoExport, setCargandoExport] = useState(false)
+
+  async function descargar(tipo: string, params = '') {
+    setCargandoExport(true)
+    try {
+      const res = await fetch(`/api/proveedores/exportar?tipo=${tipo}&formato=csv${params}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `preciosv_${tipo}_${new Date().toISOString().split('T')[0]}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setCargandoExport(false)
+    }
+  }
 
   const cargar = useCallback(async () => {
     setCargando(true)
@@ -266,7 +330,7 @@ export default function AlertasCompetencia({ sinCompetidores }: Props) {
   }
 
   // ── Nueva badge de alertas ──────────────────────────────────────
-  const totalNuevas   = data.alertas.reduce((s, a) => s + a.ofertas.filter(o => o.estado === 'nueva').length, 0)
+  const totalNuevas    = data.alertas.reduce((s, a) => s + a.ofertas.filter(o => o.estado === 'nueva').length, 0)
   const totalRecientes = data.alertas.reduce((s, a) => s + a.ofertas.filter(o => o.estado === 'reciente').length, 0)
 
   return (
@@ -288,11 +352,24 @@ export default function AlertasCompetencia({ sinCompetidores }: Props) {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-xs text-slate-400">
-          <span>{ahora.toLocaleTimeString('es-SV')}</span>
-          <button onClick={cargar} disabled={cargando} className="hover:text-slate-600 flex items-center gap-1">
-            <RefreshCw className={clsx('w-3 h-3', cargando && 'animate-spin')} /> Actualizar
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => descargar('alertas')}
+            disabled={cargandoExport}
+            className="inline-flex items-center gap-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
+          >
+            {cargandoExport
+              ? <RefreshCw className="w-3 h-3 animate-spin" />
+              : <Download className="w-3 h-3" />
+            }
+            Exportar CSV
           </button>
+          <div className="flex items-center gap-3 text-xs text-slate-400">
+            <span>{ahora.toLocaleTimeString('es-SV')}</span>
+            <button onClick={cargar} disabled={cargando} className="hover:text-slate-600 flex items-center gap-1">
+              <RefreshCw className={clsx('w-3 h-3', cargando && 'animate-spin')} /> Actualizar
+            </button>
+          </div>
         </div>
       </div>
 

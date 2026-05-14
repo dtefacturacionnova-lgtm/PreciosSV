@@ -1,9 +1,163 @@
 'use client'
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { RefreshCw, TrendingDown, TrendingUp, Minus, AlertTriangle, LineChart } from 'lucide-react'
+import { RefreshCw, TrendingDown, TrendingUp, Minus, AlertTriangle, LineChart, Download } from 'lucide-react'
 import HistoricoChart from '@/components/HistoricoChart'
 import clsx from 'clsx'
+
+// ─── Types: Anomalías ─────────────────────────────────────────────────────────
+
+interface Anomalia {
+  variante_id:     number
+  nombre:          string
+  supermercado:    string
+  color:           string
+  marca:           string
+  es_propio:       boolean
+  precio_anterior: number
+  precio_actual:   number
+  cambio_pct:      number
+  tipo:            'subida_brusca' | 'bajada_brusca'
+  detectado_en:    string
+}
+
+interface AnomaliaData {
+  anomalias:    Anomalia[]
+  total:        number
+  sin_historial?: boolean
+}
+
+// ─── Sección: Movimientos Detectados ─────────────────────────────────────────
+
+function MovimientosDetectados() {
+  const [data,     setData]     = useState<AnomaliaData | null>(null)
+  const [cargando, setCargando] = useState(true)
+  const [error,    setError]    = useState<string | null>(null)
+
+  const cargar = useCallback(async () => {
+    setCargando(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/proveedores/anomalias')
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Error')
+      setData(await res.json())
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setCargando(false)
+    }
+  }, [])
+
+  useEffect(() => { cargar() }, [cargar])
+
+  return (
+    <div className="bg-white border border-slate-100 rounded-2xl p-4">
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-4">
+        <AlertTriangle className="w-4 h-4 text-amber-500" />
+        <h4 className="text-sm font-semibold text-slate-700 flex-1">Movimientos Detectados</h4>
+        {data && data.total > 0 && (
+          <span className="text-xs font-bold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+            {data.total}
+          </span>
+        )}
+        <button
+          onClick={cargar}
+          disabled={cargando}
+          className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+        >
+          <RefreshCw className={clsx('w-3 h-3', cargando && 'animate-spin')} />
+        </button>
+      </div>
+
+      {/* Estados */}
+      {cargando && !data && (
+        <div className="flex items-center justify-center py-6 gap-2 text-slate-400">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+          <span className="text-xs">Analizando precios…</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="text-center py-4">
+          <p className="text-xs text-red-600 mb-2">{error}</p>
+          <button onClick={cargar} className="text-xs text-red-500 underline">Reintentar</button>
+        </div>
+      )}
+
+      {!cargando && !error && data && (data.sin_historial || data.total === 0) && (
+        <p className="text-xs text-slate-400 text-center py-4 italic">
+          Sin movimientos detectados en los últimos 7 días
+        </p>
+      )}
+
+      {!error && data && data.total > 0 && (
+        <div className="space-y-2">
+          {data.anomalias.map(a => (
+            <div
+              key={`${a.variante_id}-${a.supermercado}`}
+              className={clsx(
+                'flex items-center gap-3 rounded-xl px-3 py-2.5 border',
+                a.es_propio
+                  ? 'bg-blue-50/50 border-blue-100'
+                  : 'bg-slate-50 border-slate-100'
+              )}
+            >
+              {/* Dot de supermercado */}
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: a.color }}
+              />
+
+              {/* Nombre del producto */}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-800 truncate">{a.nombre}</p>
+                <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                  <span className="text-xs text-slate-500">{a.supermercado}</span>
+                  <span className="text-xs text-slate-400">·</span>
+                  <span className="text-xs text-slate-500">{a.marca}</span>
+                  {a.es_propio && (
+                    <span className="text-xs text-blue-500 font-medium">Tu marca</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Precios */}
+              <div className="text-right flex-shrink-0">
+                <p className="text-xs text-slate-400 line-through">${a.precio_anterior.toFixed(2)}</p>
+                <p className={clsx(
+                  'text-sm font-bold',
+                  a.tipo === 'subida_brusca' ? 'text-red-700' : 'text-emerald-700'
+                )}>
+                  ${a.precio_actual.toFixed(2)}
+                </p>
+              </div>
+
+              {/* Badge tipo */}
+              <span className={clsx(
+                'inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0',
+                a.tipo === 'subida_brusca'
+                  ? 'bg-red-100 text-red-700'
+                  : 'bg-emerald-100 text-emerald-700'
+              )}>
+                {a.tipo === 'subida_brusca'
+                  ? <TrendingUp className="w-3 h-3" />
+                  : <TrendingDown className="w-3 h-3" />
+                }
+                {a.tipo === 'subida_brusca' ? 'SUBIDA' : 'BAJADA'}
+                {' '}{a.cambio_pct > 0 ? '+' : ''}{a.cambio_pct}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs text-slate-400 mt-3">
+        Cambios &gt; 15% o &gt; 2σ vs. baseline de los 7 días previos
+      </p>
+    </div>
+  )
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -123,11 +277,28 @@ function TarjetaTendencia({
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 export default function TendenciasPrecios() {
-  const [data,          setData]          = useState<TendenciasData | null>(null)
-  const [cargando,      setCargando]      = useState(true)
-  const [error,         setError]         = useState<string | null>(null)
-  const [dias,          setDias]          = useState(30)
-  const [marcasActivas, setMarcasActivas] = useState<Set<string>>(new Set())
+  const [data,           setData]           = useState<TendenciasData | null>(null)
+  const [cargando,       setCargando]       = useState(true)
+  const [error,          setError]          = useState<string | null>(null)
+  const [dias,           setDias]           = useState(30)
+  const [marcasActivas,  setMarcasActivas]  = useState<Set<string>>(new Set())
+  const [cargandoExport, setCargandoExport] = useState(false)
+
+  async function descargar(tipo: string, params = '') {
+    setCargandoExport(true)
+    try {
+      const res = await fetch(`/api/proveedores/exportar?tipo=${tipo}&formato=csv${params}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `preciosv_${tipo}_${new Date().toISOString().split('T')[0]}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setCargandoExport(false)
+    }
+  }
 
   const cargar = useCallback(async (d: number) => {
     setCargando(true)
@@ -227,14 +398,27 @@ export default function TendenciasPrecios() {
           ))}
         </div>
 
-        <button
-          onClick={() => cargar(dias)}
-          disabled={cargando}
-          className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
-        >
-          <RefreshCw className={clsx('w-3 h-3', cargando && 'animate-spin')} />
-          Actualizar
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => descargar('tendencias', `&dias=${dias}`)}
+            disabled={cargandoExport || !data || data.marcas.length === 0}
+            className="inline-flex items-center gap-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
+          >
+            {cargandoExport
+              ? <RefreshCw className="w-3 h-3 animate-spin" />
+              : <Download className="w-3 h-3" />
+            }
+            Exportar CSV
+          </button>
+          <button
+            onClick={() => cargar(dias)}
+            disabled={cargando}
+            className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+          >
+            <RefreshCw className={clsx('w-3 h-3', cargando && 'animate-spin')} />
+            Actualizar
+          </button>
+        </div>
       </div>
 
       {/* Tarjetas resumen por marca */}
@@ -300,6 +484,9 @@ export default function TendenciasPrecios() {
           </div>
         </div>
       )}
+
+      {/* Movimientos detectados (anomalías) */}
+      <MovimientosDetectados />
 
       <p className="text-xs text-center text-slate-400">
         Precio promedio efectivo (oferta o normal) · Agrupado por día · Todas las cadenas incluidas

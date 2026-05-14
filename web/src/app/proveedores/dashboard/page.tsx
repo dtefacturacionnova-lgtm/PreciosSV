@@ -5,12 +5,13 @@ import Link from 'next/link'
 import {
   Package, Tag, Store, TrendingDown,
   RefreshCw, LogIn, Building2, BarChart2, ShoppingBag,
-  ShieldCheck, LineChart,
+  ShieldCheck, LineChart, Lightbulb,
 } from 'lucide-react'
 import MetricaCard from '@/components/proveedores/MetricaCard'
 import TablaProductos from '@/components/proveedores/TablaProductos'
 import CumplimientoPrecios from '@/components/proveedores/CumplimientoPrecios'
 import InteligenciaMercado from '@/components/proveedores/InteligenciaMercado'
+import RecomendacionesPrecio from '@/components/proveedores/RecomendacionesPrecio'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,7 @@ interface DashboardData {
   tabla:     any[]
 }
 
-type Tab = 'catalogo' | 'cumplimiento' | 'mercado'
+type Tab = 'catalogo' | 'cumplimiento' | 'mercado' | 'recomendaciones'
 
 // ─── Sub-componente: barra de cobertura ──────────────────────────────────────
 
@@ -241,9 +242,10 @@ export default function DashboardProveedorPage() {
 
   // ── Tabs config ────────────────────────────────────────────────
   const TABS: { id: Tab; label: string; icon: typeof ShoppingBag; desc: string }[] = [
-    { id: 'catalogo',    label: 'Catálogo',                icon: ShoppingBag,  desc: 'Productos y precios actuales' },
-    { id: 'cumplimiento',label: 'Cumplimiento de PVP',     icon: ShieldCheck,  desc: 'Verifica que los supers respeten tu precio sugerido' },
-    { id: 'mercado',     label: 'Inteligencia de Mercado', icon: LineChart,     desc: 'Compara tus marcas vs. competidores' },
+    { id: 'catalogo',         label: 'Catálogo',                icon: ShoppingBag,  desc: 'Productos y precios actuales' },
+    { id: 'cumplimiento',     label: 'Cumplimiento de PVP',     icon: ShieldCheck,  desc: 'Verifica que los supers respeten tu precio sugerido' },
+    { id: 'mercado',          label: 'Inteligencia de Mercado', icon: LineChart,     desc: 'Compara tus marcas vs. competidores' },
+    { id: 'recomendaciones',  label: 'Recomendaciones',         icon: Lightbulb,    desc: 'Recomendaciones inteligentes de pricing basadas en el mercado' },
   ]
 
   return (
@@ -330,9 +332,10 @@ export default function DashboardProveedorPage() {
       })()}
 
       {/* Contenido del tab */}
-      {tab === 'catalogo'     && <TabCatalogo metricas={metricas} tabla={tabla} />}
-      {tab === 'cumplimiento' && <CumplimientoPrecios />}
-      {tab === 'mercado'      && <InteligenciaMercado />}
+      {tab === 'catalogo'        && <TabCatalogo metricas={metricas} tabla={tabla} />}
+      {tab === 'cumplimiento'    && <CumplimientoPrecios />}
+      {tab === 'mercado'         && <InteligenciaMercado />}
+      {tab === 'recomendaciones' && <RecomendacionesPrecio />}
 
     </div>
   )

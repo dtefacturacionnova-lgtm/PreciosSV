@@ -4,11 +4,12 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   RefreshCw, AlertTriangle, Plus, X, Save,
   BarChart3, TrendingDown, ShoppingBag,
-  Bell, LineChart, LayoutGrid,
+  Bell, LineChart, LayoutGrid, BarChart2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import AlertasCompetencia from './AlertasCompetencia'
 import TendenciasPrecios from './TendenciasPrecios'
+import AnaliticasPrecio from './AnaliticasPrecio'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ interface CompetenciaData {
   analisis:       Record<string, MarcaAnalisis>
 }
 
-type SubTab = 'comparativa' | 'alertas' | 'tendencias'
+type SubTab = 'comparativa' | 'alertas' | 'tendencias' | 'analiticas'
 
 // ─── Vista: Comparativa ───────────────────────────────────────────────────────
 
@@ -390,6 +391,7 @@ export default function InteligenciaMercado() {
     { id: 'comparativa', label: 'Comparativa',  icon: LayoutGrid },
     { id: 'alertas',     label: 'Alertas',      icon: Bell       },
     { id: 'tendencias',  label: 'Tendencias',   icon: LineChart  },
+    { id: 'analiticas',  label: 'Analíticas',   icon: BarChart2  },
   ]
 
   const sinCompetidores = competidores.length === 0
@@ -451,6 +453,10 @@ export default function InteligenciaMercado() {
 
       {subTab === 'tendencias' && (
         <TendenciasPrecios />
+      )}
+
+      {subTab === 'analiticas' && (
+        <AnaliticasPrecio />
       )}
     </div>
   )

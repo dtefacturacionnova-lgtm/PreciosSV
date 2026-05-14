@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   CheckCircle2, AlertTriangle, TrendingDown, HelpCircle,
   RefreshCw, Package, Pencil, X, Check, ChevronDown, ChevronUp,
+  Download,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -343,10 +344,27 @@ function FilaProducto({
 // ─── Componente principal ─────────────────────────────────────────────────────
 
 export default function CumplimientoPrecios() {
-  const [productos, setProductos] = useState<ProductoCumplimiento[]>([])
-  const [resumen,   setResumen]   = useState<ResumenGlobal>({ total_ok: 0, total_alto: 0, total_bajo: 0, total_sin_referencia: 0 })
-  const [cargando,  setCargando]  = useState(true)
-  const [error,     setError]     = useState<string | null>(null)
+  const [productos,      setProductos]      = useState<ProductoCumplimiento[]>([])
+  const [resumen,        setResumen]        = useState<ResumenGlobal>({ total_ok: 0, total_alto: 0, total_bajo: 0, total_sin_referencia: 0 })
+  const [cargando,       setCargando]       = useState(true)
+  const [error,          setError]          = useState<string | null>(null)
+  const [cargandoExport, setCargandoExport] = useState(false)
+
+  async function descargar(tipo: string, params = '') {
+    setCargandoExport(true)
+    try {
+      const res = await fetch(`/api/proveedores/exportar?tipo=${tipo}&formato=csv${params}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `preciosv_${tipo}_${new Date().toISOString().split('T')[0]}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setCargandoExport(false)
+    }
+  }
 
   const cargar = useCallback(async () => {
     setCargando(true)
@@ -472,12 +490,25 @@ export default function CumplimientoPrecios() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold text-slate-700">Productos ({productos.length})</h3>
-          <button
-            onClick={cargar}
-            className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
-          >
-            <RefreshCw className="w-3 h-3" /> Actualizar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => descargar('cumplimiento')}
+              disabled={cargandoExport || productos.length === 0}
+              className="inline-flex items-center gap-1.5 text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
+            >
+              {cargandoExport
+                ? <RefreshCw className="w-3 h-3 animate-spin" />
+                : <Download className="w-3 h-3" />
+              }
+              Exportar CSV
+            </button>
+            <button
+              onClick={cargar}
+              className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+            >
+              <RefreshCw className="w-3 h-3" /> Actualizar
+            </button>
+          </div>
         </div>
 
         {productos.length === 0 ? (
