@@ -1,0 +1,43 @@
+# ── Web Framework ──────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ── Base de datos ───────────────────────────────────────────
+sqlalchemy==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+psycopg2-binary==2.9.9
+
+# ── Cache & Cola de tareas ──────────────────────────────────
+redis==5.0.4
+celery==5.3.6
+celery[redis]==5.3.6
+flower==2.0.1          # monitoreo de Celery en UI web
+
+# ── Scraping ────────────────────────────────────────────────
+playwright==1.44.0
+httpx==0.27.0
+beautifulsoup4==4.12.3
+lxml==5.2.1
+
+# ── Validación & configuración ──────────────────────────────
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+# ── Autenticación ───────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ── IA: Product Matching ────────────────────────────────────
+anthropic==0.26.1
+
+# ── Email (alertas) ─────────────────────────────────────────
+sendgrid==6.11.0
+
+# ── Utilidades ──────────────────────────────────────────────
+tenacity==8.3.0        # reintentos con backoff
+structlog==24.1.0      # logging estructurado
+python-slugify==8.0.4
+arrow==1.3.0           # manejo de fechas

@@ -1,0 +1,146 @@
+version: "3.9"
+
+services:
+
+  # ── Base de datos ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: preciosv_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: preciosv_db
+      POSTGRES_USER: preciosv
+      POSTGRES_PASSWORD: preciosv123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U preciosv -d preciosv_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: preciosv_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── API FastAPI ───────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: preciosv_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://preciosv:preciosv123@postgres:5432/preciosv_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app    # hot-reload en desarrollo
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+  # ── Celery Worker (scrapers) ──────────────────────────────
+  worker_scrapers:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: preciosv_worker_scrapers
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://preciosv:preciosv123@postgres:5432/preciosv_db
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - postgres
+      - redis
+    command: >
+      celery -A app.tasks.scraper_tasks.celery_app worker
+      --loglevel=info
+      --queues=scrapers
+      --concurrency=2
+
+  # ── Celery Worker (alertas) ───────────────────────────────
+  worker_alertas:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: preciosv_worker_alertas
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://preciosv:preciosv123@postgres:5432/preciosv_db
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - postgres
+      - redis
+    command: >
+      celery -A app.tasks.scraper_tasks.celery_app worker
+      --loglevel=info
+      --queues=alertas
+      --concurrency=4
+
+  # ── Celery Beat (scheduler) ───────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: preciosv_beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+    depends_on:
+      - redis
+    command: >
+      celery -A app.tasks.scraper_tasks.celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+
+  # ── Flower (monitoreo Celery en UI web) ──────────────────
+  flower:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: preciosv_flower
+    restart: unless-stopped
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    command: >
+      celery -A app.tasks.scraper_tasks.celery_app flower
+      --port=5555
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,68 @@
+name: Scrapers de Precios
+
+on:
+  schedule:
+    # Cada 6 horas: 0:00, 6:00, 12:00, 18:00 hora El Salvador (UTC-6)
+    - cron: '0 6,12,18,0 * * *'
+  workflow_dispatch:
+    inputs:
+      supermercados:
+        description: 'Supermercados a ejecutar (vacío = todos)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  scrape:
+    name: Ejecutar scrapers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      DATABASE_URL:         ${{ secrets.DATABASE_URL }}
+      ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+      GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+      SENDGRID_API_KEY:     ${{ secrets.SENDGRID_API_KEY }}
+      APP_ENV:              production
+      DEBUG:                'false'
+      SCRAPER_HEADLESS:     'true'
+      SCRAPER_DELAY_SECONDS: '2'
+      SCRAPER_MAX_RETRIES:  '3'
+      SCRAPER_TIMEOUT_SECONDS: '45'
+      MATCHING_ENABLED:     'true'
+      # Redis no se usa en modo standalone — valores dummy
+      REDIS_URL:            redis://localhost:6379/0
+      CELERY_BROKER_URL:    redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Instalar Playwright + Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Ejecutar scrapers
+        run: |
+          SUPERS="${{ github.event.inputs.supermercados }}"
+          if [ -n "$SUPERS" ]; then
+            python scripts/run_scrapers_github.py $SUPERS
+          else
+            python scripts/run_scrapers_github.py
+          fi
+
+      - name: Notificar fallo (opcional)
+        if: failure()
+        run: |
+          echo "::error::El scraping falló. Revisa los logs arriba."
