@@ -110,14 +110,93 @@ class ScraperVTEX:
         )
         return self.productos_encontrados
 
+    async def _obtener_categorias(self, client: httpx.AsyncClient) -> list[int]:
+        """
+        Obtiene IDs de categorías hoja desde el árbol de categorías VTEX.
+        Nivel 3 cubre: Departamento > Categoría > Sub-categoría.
+        """
+        try:
+            url = f"{self.base_url}/api/catalog_system/pub/category/tree/3"
+            tree = await self._get(client, url)
+            ids: list[int] = []
+
+            def _recorrer(nodo: dict | list) -> None:
+                if isinstance(nodo, list):
+                    for item in nodo:
+                        _recorrer(item)
+                    return
+                children = nodo.get("children") or []
+                if not children:
+                    ids.append(nodo["id"])
+                else:
+                    for child in children:
+                        _recorrer(child)
+
+            _recorrer(tree)
+            return ids
+        except Exception as e:
+            logger.warning("No se pudo obtener árbol de categorías VTEX",
+                           tienda=self.tienda_key, error=str(e))
+            return []
+
+    async def _scrape_categoria(self, client: httpx.AsyncClient, cat_id: int) -> None:
+        """Pagina todos los productos de una categoría VTEX usando fq=C:/{id}/."""
+        page_size = 50
+        desde = 0
+        skus_vistos: set[str] = set()
+
+        while True:
+            url = f"{self.base_url}/api/catalog_system/pub/products/search"
+            params = {
+                "fq": f"C:/{cat_id}/",
+                "_from": desde,
+                "_to": desde + page_size - 1,
+                "O": "OrderByTopSaleDESC",
+            }
+            try:
+                items = await self._get(client, url, params)
+            except httpx.HTTPStatusError as e:
+                logger.error("Error HTTP en VTEX cat", tienda=self.tienda_key,
+                             cat_id=cat_id, status=e.response.status_code)
+                self.errores += 1
+                break
+            except Exception as e:
+                logger.error("Error inesperado en VTEX cat", tienda=self.tienda_key,
+                             cat_id=cat_id, error=str(e))
+                self.errores += 1
+                break
+
+            if not items:
+                break
+
+            nuevos = 0
+            for item in items:
+                sku_id = str(item.get("productId", ""))
+                if sku_id and sku_id in skus_vistos:
+                    continue
+                if sku_id:
+                    skus_vistos.add(sku_id)
+                producto = self._parsear_producto(item)
+                if producto:
+                    self.productos_encontrados.append(producto)
+                    nuevos += 1
+
+            if nuevos == 0:
+                break
+
+            desde += page_size
+            await asyncio.sleep(settings.scraper_delay_seconds)
+
     async def _scrape_por_paginas(self, client: httpx.AsyncClient) -> None:
         """
-        VTEX permite 50 productos por página.
-        Itera hasta que la respuesta esté vacía.
+        Estrategia principal:
+        1. Intenta el search root (funciona para Walmart y tiendas VTEX abiertas).
+        2. Si devuelve 0 resultados, obtiene el árbol de categorías e itera.
         """
         page_size = 50
         desde = 0
 
+        # ── Intento 1: search root sin categoría ─────────────────
         while True:
             url = f"{self.base_url}/api/catalog_system/pub/products/search"
             params = {
@@ -130,12 +209,12 @@ class ScraperVTEX:
             try:
                 items = await self._get(client, url, params)
             except httpx.HTTPStatusError as e:
-                logger.error("Error HTTP en VTEX", tienda=self.tienda_key,
+                logger.error("Error HTTP en VTEX root", tienda=self.tienda_key,
                              status=e.response.status_code, desde=desde)
                 self.errores += 1
                 break
             except Exception as e:
-                logger.error("Error inesperado en VTEX", tienda=self.tienda_key,
+                logger.error("Error inesperado en VTEX root", tienda=self.tienda_key,
                              error=str(e), desde=desde)
                 self.errores += 1
                 break
@@ -148,13 +227,27 @@ class ScraperVTEX:
                 if producto:
                     self.productos_encontrados.append(producto)
 
-            logger.debug("Página scrapeada", tienda=self.tienda_key,
+            logger.debug("Página scrapeada (root)", tienda=self.tienda_key,
                          desde=desde, obtenidos=len(items))
 
             desde += page_size
-
-            # Respetar rate limit: delay configurable entre páginas
             await asyncio.sleep(settings.scraper_delay_seconds)
+
+        # ── Intento 2: iterar por categorías si root no devolvió nada ──
+        if len(self.productos_encontrados) == 0:
+            logger.info("Root VTEX vacío — usando árbol de categorías",
+                        tienda=self.tienda_key)
+            cat_ids = await self._obtener_categorias(client)
+            logger.info("Categorías encontradas", tienda=self.tienda_key,
+                        total_cats=len(cat_ids))
+
+            for cat_id in cat_ids:
+                prev_total = len(self.productos_encontrados)
+                await self._scrape_categoria(client, cat_id)
+                nuevos = len(self.productos_encontrados) - prev_total
+                if nuevos:
+                    logger.debug("Categoría completada", tienda=self.tienda_key,
+                                 cat_id=cat_id, nuevos=nuevos)
 
     def _parsear_producto(self, item: dict) -> Optional[dict]:
         """

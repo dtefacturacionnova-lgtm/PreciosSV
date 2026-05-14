@@ -88,13 +88,19 @@ class ScraperSelectos:
     async def _scrape_categoria(self, page: Page, categoria: str) -> None:
         url = f"{BASE_URL}/Tienda/Catalogo/{categoria}"
         try:
-            await page.goto(url, wait_until="networkidle", timeout=60_000)
+            # domcontentloaded es más rápido y confiable en CI que networkidle
+            # Angular carga el contenido dinámicamente; esperamos la carga inicial
+            # y luego scrolleamos para activar el lazy-loading
+            await page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+
+            # Esperar a que Angular monte los productos (~3-8 s en CI)
+            await asyncio.sleep(5)
 
             # Hacer scroll para activar lazy-loading de productos
             await self._scroll_completo(page)
 
             # Pequeña pausa para que carguen las últimas peticiones de red
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
         except Exception as e:
             logger.error("Error scrapeando categoría Selectos",
@@ -123,8 +129,12 @@ class ScraperSelectos:
         if url in self._urls_vistas:
             return
 
-        # Filtrar solo URLs relevantes (API interna de Selectos)
-        keywords = ["producto", "catalog", "search", "item", "sku"]
+        # Filtrar solo URLs relevantes (API interna de Selectos / VTEX)
+        keywords = [
+            "producto", "catalog", "search", "item", "sku",
+            "graphql", "api/io", "_v/api", "shelf", "productList",
+            "intelligentsearch", "product-summary",
+        ]
         if not any(k in url.lower() for k in keywords):
             return
 
