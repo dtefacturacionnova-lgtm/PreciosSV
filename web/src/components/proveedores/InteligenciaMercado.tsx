@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   RefreshCw, AlertTriangle, Plus, X, Save,
   BarChart3, TrendingDown, ShoppingBag,
-  Bell, LineChart, LayoutGrid, BarChart2, Zap,
+  Bell, LineChart, LayoutGrid, BarChart2, Zap, ShieldAlert,
 } from 'lucide-react'
 import clsx from 'clsx'
 import AlertasCompetencia from './AlertasCompetencia'
@@ -12,6 +12,7 @@ import TendenciasPrecios from './TendenciasPrecios'
 import AnaliticasPrecio from './AnaliticasPrecio'
 import AnomaliasPrecios from './AnomaliasPrecios'
 import ComparativaCatalogo from './ComparativaCatalogo'
+import RiesgoCompetitivo from './RiesgoCompetitivo'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ interface CompetenciaData {
   analisis:       Record<string, MarcaAnalisis>
 }
 
-type SubTab = 'comparativa' | 'alertas' | 'tendencias' | 'analiticas' | 'anomalias'
+type SubTab = 'comparativa' | 'alertas' | 'tendencias' | 'analiticas' | 'anomalias' | 'riesgo'
 
 // ─── Vista: Comparativa ───────────────────────────────────────────────────────
 
@@ -434,11 +435,12 @@ export default function InteligenciaMercado() {
 
   // ── Sub-tabs ───────────────────────────────────────────────────
   const SUB_TABS: { id: SubTab; label: string; icon: typeof LayoutGrid; badge?: number }[] = [
-    { id: 'comparativa', label: 'Comparativa',  icon: LayoutGrid },
-    { id: 'alertas',     label: 'Alertas',      icon: Bell       },
-    { id: 'tendencias',  label: 'Tendencias',   icon: LineChart  },
-    { id: 'analiticas',  label: 'Analíticas',   icon: BarChart2  },
-    { id: 'anomalias',   label: 'Anomalías',    icon: Zap        },
+    { id: 'comparativa', label: 'Comparativa',  icon: LayoutGrid  },
+    { id: 'alertas',     label: 'Alertas',      icon: Bell        },
+    { id: 'tendencias',  label: 'Tendencias',   icon: LineChart   },
+    { id: 'analiticas',  label: 'Analíticas',   icon: BarChart2   },
+    { id: 'anomalias',   label: 'Anomalías',    icon: Zap         },
+    { id: 'riesgo',      label: 'Riesgo',       icon: ShieldAlert },
   ]
 
   return (
@@ -506,6 +508,10 @@ export default function InteligenciaMercado() {
 
       {subTab === 'anomalias' && (
         <AnomaliasPrecios />
+      )}
+
+      {subTab === 'riesgo' && (
+        <RiesgoCompetitivo />
       )}
     </div>
   )
