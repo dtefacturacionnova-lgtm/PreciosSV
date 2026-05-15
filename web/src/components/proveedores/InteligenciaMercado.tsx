@@ -441,8 +441,6 @@ export default function InteligenciaMercado() {
     { id: 'anomalias',   label: 'Anomalías',    icon: Zap        },
   ]
 
-  const sinCompetidores = competidores.length === 0
-
   return (
     <div className="space-y-4">
 
@@ -495,7 +493,7 @@ export default function InteligenciaMercado() {
       )}
 
       {subTab === 'alertas' && (
-        <AlertasCompetencia sinCompetidores={sinCompetidores} />
+        <AlertasCompetencia />
       )}
 
       {subTab === 'tendencias' && (

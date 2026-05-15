@@ -5,7 +5,7 @@ import {
   Plus, Package, Pencil, Trash2, ChevronDown, ChevronUp,
   RefreshCw, X, Check, AlertTriangle, Barcode, Users,
   Star, ArrowUpDown, Link2, Link2Off, ShoppingCart,
-  TrendingUp, TrendingDown, Minus, ExternalLink,
+  TrendingUp, TrendingDown, Minus, ExternalLink, Search,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -14,16 +14,27 @@ type TipoRelacion = 'SUSTITUTO_DIRECTO' | 'ALTERNATIVA_PREMIUM' | 'ALTERNATIVA_E
 type Prioridad = 1 | 2 | 3
 
 interface Competidor {
-  id:                   number
-  competidor_nombre:    string
-  competidor_marca:     string
-  competidor_ean_13:    string | null
-  competidor_upc_12:    string | null
-  tipo_relacion:        TipoRelacion
-  factor_conversion:    number
-  misma_presentacion:   boolean
-  prioridad:            Prioridad
-  notas:                string | null
+  id:                       number
+  competidor_nombre:        string
+  competidor_marca:         string
+  competidor_ean_13:        string | null
+  competidor_upc_12:        string | null
+  competidor_producto_id:   number | null   // null = sin enlace al sistema de scraping
+  tipo_relacion:            TipoRelacion
+  factor_conversion:        number
+  misma_presentacion:       boolean
+  prioridad:                Prioridad
+  notas:                    string | null
+}
+
+// ─── Tipo para resultados de búsqueda de producto ─────────────────────────────
+
+interface ProductoBusqueda {
+  id:         number
+  nombre:     string
+  marca:      string
+  imagen_url: string | null
+  ean_13:     string | null
 }
 
 interface Producto {
@@ -144,6 +155,114 @@ function Modal({ title, onClose, children }: {
         <div className="px-6 py-5">{children}</div>
       </div>
     </div>
+  )
+}
+
+// ─── Modal búsqueda de producto scrapeado ────────────────────────────────────
+
+function ModalBuscarProducto({ titulo, onClose, onSelect }: {
+  titulo:   string
+  onClose:  () => void
+  onSelect: (prod: ProductoBusqueda) => void
+}) {
+  const [q,          setQ]          = useState('')
+  const [resultados, setResultados] = useState<ProductoBusqueda[]>([])
+  const [buscando,   setBuscando]   = useState(false)
+  const [errorBusq,  setErrorBusq]  = useState<string | null>(null)
+
+  useEffect(() => {
+    if (q.trim().length < 2) { setResultados([]); return }
+    setBuscando(true)
+    setErrorBusq(null)
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/proveedores/buscar-producto?q=${encodeURIComponent(q.trim())}`)
+        if (!res.ok) throw new Error('Error al buscar')
+        const data = await res.json()
+        setResultados(data.productos ?? [])
+      } catch {
+        setErrorBusq('No se pudo buscar. Intenta de nuevo.')
+      } finally {
+        setBuscando(false)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [q])
+
+  return (
+    <Modal title={titulo} onClose={onClose}>
+      {/* Buscador */}
+      <div className="mb-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            autoFocus
+            type="text"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder="Nombre o marca del producto en supermercados…"
+            className="w-full border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
+          />
+          {buscando && (
+            <RefreshCw className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 animate-spin" />
+          )}
+        </div>
+        <p className="text-xs text-slate-400 mt-1.5">
+          Busca el nombre tal como aparece en VTEX / Selectos. Ej: "Jabón Dove Original 90g"
+        </p>
+      </div>
+
+      {/* Estado vacío */}
+      {q.trim().length < 2 && (
+        <div className="text-center py-8">
+          <Search className="w-8 h-8 text-slate-200 mx-auto mb-2" />
+          <p className="text-sm text-slate-400">Escribe 2+ caracteres para buscar</p>
+        </div>
+      )}
+
+      {/* Error */}
+      {errorBusq && (
+        <p className="text-sm text-red-500 text-center py-4 flex items-center justify-center gap-1.5">
+          <AlertTriangle className="w-4 h-4" /> {errorBusq}
+        </p>
+      )}
+
+      {/* Sin resultados */}
+      {!buscando && !errorBusq && q.trim().length >= 2 && resultados.length === 0 && (
+        <p className="text-sm text-slate-400 text-center py-6">
+          Sin resultados para <strong>"{q.trim()}"</strong>.<br />
+          <span className="text-xs">Prueba con menos palabras o solo la marca.</span>
+        </p>
+      )}
+
+      {/* Resultados */}
+      {resultados.length > 0 && (
+        <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+          {resultados.map(prod => (
+            <button
+              key={prod.id}
+              onClick={() => onSelect(prod)}
+              className="w-full flex items-center gap-3 p-3 hover:bg-blue-50 rounded-xl border border-slate-100 hover:border-blue-200 transition-all text-left group"
+            >
+              <div className="w-9 h-9 bg-slate-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                {prod.imagen_url
+                  // eslint-disable-next-line @next/next/no-img-element
+                  ? <img src={prod.imagen_url} alt={prod.nombre} className="max-h-8 max-w-8 object-contain" />
+                  : <Package className="w-4 h-4 text-slate-400" />
+                }
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-slate-800 truncate group-hover:text-blue-700">{prod.nombre}</p>
+                <p className="text-xs text-slate-400">
+                  {prod.marca}{prod.ean_13 ? ` · EAN: ${prod.ean_13}` : ''}
+                </p>
+              </div>
+              <Link2 className="w-4 h-4 text-slate-300 group-hover:text-blue-500 flex-shrink-0 transition-colors" />
+            </button>
+          ))}
+        </div>
+      )}
+    </Modal>
   )
 }
 
@@ -405,8 +524,10 @@ function ModalCompetidor({ productoId, competidor, onClose, onSaved }: {
 function FilaCompetidor({ c, productoId, onActualizar }: {
   c: Competidor; productoId: number; onActualizar: () => void
 }) {
-  const [editando, setEditando]   = useState(false)
-  const [borrando, setBorrando]   = useState(false)
+  const [editando,   setEditando]   = useState(false)
+  const [borrando,   setBorrando]   = useState(false)
+  const [vinculando, setVinculando] = useState(false)
+  const [guardando,  setGuardando]  = useState(false)
 
   async function eliminar() {
     if (!confirm(`¿Eliminar "${c.competidor_nombre}"?`)) return
@@ -414,6 +535,44 @@ function FilaCompetidor({ c, productoId, onActualizar }: {
     await fetch(`/api/proveedores/catalogo/${productoId}/competidores/${c.id}`, { method: 'DELETE' })
     onActualizar()
   }
+
+  async function vincularCompetidor(prod: ProductoBusqueda) {
+    setVinculando(false)
+    setGuardando(true)
+    try {
+      await fetch(
+        `/api/proveedores/catalogo/${productoId}/competidores/${c.id}`,
+        {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ competidor_producto_id: prod.id }),
+        }
+      )
+      onActualizar()
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  async function desvincularCompetidor() {
+    if (!confirm('¿Quitar el vínculo a datos scrapeados? El competidor seguirá registrado.')) return
+    setGuardando(true)
+    try {
+      await fetch(
+        `/api/proveedores/catalogo/${productoId}/competidores/${c.id}`,
+        {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ competidor_producto_id: null }),
+        }
+      )
+      onActualizar()
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const enlazado = c.competidor_producto_id != null
 
   return (
     <>
@@ -425,6 +584,14 @@ function FilaCompetidor({ c, productoId, onActualizar }: {
           onSaved={() => { setEditando(false); onActualizar() }}
         />
       )}
+      {vinculando && (
+        <ModalBuscarProducto
+          titulo={`Vincular "${c.competidor_nombre}" a datos scrapeados`}
+          onClose={() => setVinculando(false)}
+          onSelect={vincularCompetidor}
+        />
+      )}
+
       <div className="flex items-center justify-between py-2.5 border-b border-slate-50 last:border-0">
         <div className="flex items-center gap-3 min-w-0">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${PRIORIDAD_COLOR[c.prioridad]}`}>
@@ -435,6 +602,7 @@ function FilaCompetidor({ c, productoId, onActualizar }: {
             <p className="text-xs text-slate-400">{c.competidor_marca}{c.competidor_ean_13 ? ` · EAN: ${c.competidor_ean_13}` : ''}</p>
           </div>
         </div>
+
         <div className="flex items-center gap-2 ml-2 flex-shrink-0">
           <span className={`text-xs px-2 py-0.5 rounded-full ${RELACION_COLOR[c.tipo_relacion]}`}>
             {RELACION_LABEL[c.tipo_relacion]}
@@ -444,6 +612,28 @@ function FilaCompetidor({ c, productoId, onActualizar }: {
               ×{c.factor_conversion}
             </span>
           )}
+
+          {/* Indicador / botón de vínculo a scraping */}
+          {guardando ? (
+            <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+          ) : enlazado ? (
+            <button
+              onClick={desvincularCompetidor}
+              title="Vinculado a datos scrapeados — clic para quitar"
+              className="flex items-center gap-1 text-[10px] bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded-full hover:bg-red-50 hover:text-red-500 transition-colors"
+            >
+              <Link2 className="w-3 h-3" /> Vinculado
+            </button>
+          ) : (
+            <button
+              onClick={() => setVinculando(true)}
+              title="Sin vínculo — vincular manualmente a datos scrapeados"
+              className="flex items-center gap-1 text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full hover:bg-blue-50 hover:text-blue-600 transition-colors"
+            >
+              <Link2Off className="w-3 h-3" /> Vincular
+            </button>
+          )}
+
           <button onClick={() => setEditando(true)} className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition-colors">
             <Pencil className="w-3.5 h-3.5" />
           </button>
@@ -546,7 +736,8 @@ function PanelPrecios({ productoId, pvpSugerido }: { productoId: number; pvpSuge
         {!estado.enlazado && (
           <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 flex items-center gap-1.5">
             <Link2Off className="w-3.5 h-3.5 flex-shrink-0" />
-            Agrega un EAN-13 al producto para activar el enlace automático con los scrapers.
+            Sin enlace al sistema de scraping. Agrega el EAN-13 para matching automático
+            o usa el botón <Link2 className="inline w-3 h-3 mx-0.5" /> en la fila para vincular manualmente.
           </p>
         )}
       </div>
@@ -624,9 +815,11 @@ function PanelPrecios({ productoId, pvpSugerido }: { productoId: number; pvpSuge
 // ─── Fila de producto ─────────────────────────────────────────────────────────
 
 function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => void }) {
-  const [panel,    setPanel]    = useState<'competidores' | 'precios' | null>(null)
-  const [editando, setEditando] = useState(false)
-  const [borrando, setBorrando] = useState(false)
+  const [panel,      setPanel]      = useState<'competidores' | 'precios' | null>(null)
+  const [editando,   setEditando]   = useState(false)
+  const [borrando,   setBorrando]   = useState(false)
+  const [vinculando, setVinculando] = useState(false)
+  const [guardando,  setGuardando]  = useState(false)
 
   const togglePanel = (nombre: 'competidores' | 'precios') =>
     setPanel(prev => (prev === nombre ? null : nombre))
@@ -636,6 +829,42 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
     setBorrando(true)
     await fetch(`/api/proveedores/catalogo/${p.id}`, { method: 'DELETE' })
     onActualizar()
+  }
+
+  async function vincularProducto(prod: ProductoBusqueda) {
+    setVinculando(false)
+    setGuardando(true)
+    try {
+      await fetch(
+        `/api/proveedores/catalogo/${p.id}`,
+        {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ producto_id: prod.id }),
+        }
+      )
+      onActualizar()
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  async function desvincularProducto() {
+    if (!confirm('¿Quitar el vínculo a datos scrapeados? El producto seguirá en tu catálogo.')) return
+    setGuardando(true)
+    try {
+      await fetch(
+        `/api/proveedores/catalogo/${p.id}`,
+        {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ producto_id: null }),
+        }
+      )
+      onActualizar()
+    } finally {
+      setGuardando(false)
+    }
   }
 
   const descripcion = [
@@ -654,24 +883,43 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
           onSaved={() => { setEditando(false); onActualizar() }}
         />
       )}
+      {vinculando && (
+        <ModalBuscarProducto
+          titulo={`Vincular "${p.nombre}" a datos scrapeados`}
+          onClose={() => setVinculando(false)}
+          onSelect={vincularProducto}
+        />
+      )}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
         {/* Fila principal */}
         <div className="flex items-center gap-3 p-4">
-          {/* Icono + badge de enlace */}
+          {/* Icono + badge de enlace (interactivo) */}
           <div className="relative flex-shrink-0">
             <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
               <Package className="w-4 h-4 text-blue-500" />
             </div>
-            {/* Indicador de enlace al sistema de precios */}
-            <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center
-              ${enlazado ? 'bg-emerald-500' : 'bg-slate-300'}`}
-              title={enlazado ? 'Enlazado al sistema de precios' : 'Sin enlace — agrega EAN para enlazar'}
-            >
-              {enlazado
-                ? <Link2 className="w-2.5 h-2.5 text-white" />
-                : <Link2Off className="w-2.5 h-2.5 text-white" />
-              }
-            </div>
+            {/* Badge de enlace al sistema — clic abre modal vincular/desvincular */}
+            {guardando ? (
+              <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-slate-200 flex items-center justify-center">
+                <RefreshCw className="w-2.5 h-2.5 text-slate-400 animate-spin" />
+              </div>
+            ) : enlazado ? (
+              <button
+                onClick={desvincularProducto}
+                title="Vinculado al sistema de precios — clic para quitar"
+                className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 hover:bg-red-400 flex items-center justify-center transition-colors"
+              >
+                <Link2 className="w-2.5 h-2.5 text-white" />
+              </button>
+            ) : (
+              <button
+                onClick={() => setVinculando(true)}
+                title="Sin enlace — clic para vincular manualmente"
+                className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-slate-300 hover:bg-blue-500 flex items-center justify-center transition-colors"
+              >
+                <Link2Off className="w-2.5 h-2.5 text-white" />
+              </button>
+            )}
           </div>
 
           {/* Info producto */}
@@ -694,6 +942,16 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
                 <span className="text-xs bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">
                   PVP ${p.pvp_sugerido.toFixed(2)}
                 </span>
+              )}
+              {/* Indicador de vínculo en línea — aparece cuando no hay enlace */}
+              {!enlazado && (
+                <button
+                  onClick={() => setVinculando(true)}
+                  className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-blue-600 transition-colors"
+                >
+                  <Link2Off className="w-3 h-3" />
+                  <span>Sin datos de scraping · Vincular</span>
+                </button>
               )}
             </div>
           </div>

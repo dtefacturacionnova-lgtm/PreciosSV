@@ -44,6 +44,7 @@ export async function GET(
         id, producto_id,
         competidor_ean_13, competidor_upc_12,
         competidor_nombre, competidor_marca,
+        competidor_producto_id,
         tipo_relacion, factor_conversion,
         misma_presentacion, prioridad,
         notas, activo, created_at

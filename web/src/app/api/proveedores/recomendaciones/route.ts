@@ -1,8 +1,20 @@
 /**
  * GET /api/proveedores/recomendaciones
- * Genera recomendaciones de pricing basadas en posición del precio propio
- * vs. competidores de LA MISMA CATEGORÍA (comparación por categoría).
- * Fallback al pool global si no hay competidores en la misma categoría.
+ * Genera recomendaciones de pricing para cada item del catálogo propio.
+ *
+ * Fuente de datos:
+ *   - Precios propios: pvp_sugerido del catálogo (lo que el proveedor controla).
+ *     Si no hay pvp_sugerido, usa el precio scrapeado promedio del producto enlazado.
+ *   - Precios de mercado: precios_actuales de los competidores enlazados via
+ *     proveedor_competidores_catalogo (competidor_producto_id).
+ *
+ * Criterios:
+ *   - precio > mercado_min × 1.15  → bajar (alta ≥30%, media ≥15%)
+ *   - precio < mercado_min         → subir
+ *   - en rango                     → mantener
+ *
+ * NOTE: precios_actuales is a materialized view — PostgREST cannot infer FK relationships.
+ * All joins are resolved manually.
  */
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
@@ -13,136 +25,101 @@ export async function GET() {
   try {
     const db = createServiceClient()
 
+    // ── 1. Proveedor ─────────────────────────────────────────
     const { data: pRaw } = await db
       .from('proveedores')
-      .select('id,marcas,competidores')
+      .select('id')
       .limit(1)
       .single()
     const prov = pRaw as any
     if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
 
-    const marcasPropias: string[] = prov.marcas ?? []
-    const competidores:  string[] = prov.competidores ?? []
+    // ── 2. Catálogo propio completo (con o sin producto_id) ───
+    const { data: catalogoRaw } = await (db as any)
+      .from('proveedor_catalogo')
+      .select('id, nombre, imagen_url, pvp_sugerido, producto_id')
+      .eq('proveedor_id', prov.id)
+      .eq('activo', true)
 
-    if (marcasPropias.length === 0 || competidores.length === 0) {
+    const catalogo    = (catalogoRaw as any[] | null) ?? []
+    const catalogoIds = catalogo.map((c: any) => c.id as number)
+
+    if (catalogoIds.length === 0) {
       return NextResponse.json({ recomendaciones: [], total: 0 })
     }
 
-    // ── 1. Productos propios con categoria_id ─────────────────────
-    const { data: prodPropiosRaw } = await db
-      .from('productos')
-      .select('id, nombre, imagen_url, marca, categoria_id')
-      .in('marca', marcasPropias)
+    // ── 3. Competidores enlazados vía catálogo ────────────────
+    const { data: compLinksRaw } = await (db as any)
+      .from('proveedor_competidores_catalogo')
+      .select('id, producto_id, competidor_producto_id')
+      .in('producto_id', catalogoIds)
       .eq('activo', true)
+      .not('competidor_producto_id', 'is', null)
 
-    const prodPropios = (prodPropiosRaw as any[] | null) ?? []
-    if (prodPropios.length === 0) {
+    const compLinks = (compLinksRaw as any[] | null) ?? []
+
+    // Map: catalog_id → [competidor_producto_ids]
+    const compsByCatalogo = new Map<number, number[]>()
+    for (const link of compLinks) {
+      if (!compsByCatalogo.has(link.producto_id)) compsByCatalogo.set(link.producto_id, [])
+      compsByCatalogo.get(link.producto_id)!.push(link.competidor_producto_id)
+    }
+
+    // Solo items con al menos un competidor enlazado
+    const catalogoConComp = catalogo.filter((c: any) => compsByCatalogo.has(c.id))
+    if (catalogoConComp.length === 0) {
       return NextResponse.json({ recomendaciones: [], total: 0 })
     }
 
-    // ── 2. Variantes de productos propios ─────────────────────────
-    const propiosIds = prodPropios.map((p: any) => p.id)
-    const { data: varPropiosRaw } = await db
-      .from('producto_variantes')
-      .select('id, producto_id')
-      .in('producto_id', propiosIds)
-      .eq('activo', true)
+    // ── 4. Todos los producto_ids necesarios ──────────────────
+    const propiosProdIds = catalogo
+      .filter((c: any) => c.producto_id != null)
+      .map((c: any) => c.producto_id as number)
 
-    const varPropios    = (varPropiosRaw as any[] | null) ?? []
-    const varPropiosIds = varPropios.map((v: any) => v.id)
-    const varPropiosMap = new Map<number, number>(
-      varPropios.map((v: any) => [v.id, v.producto_id])
-    )
+    const compProdIds = [...new Set(compLinks.map((l: any) => l.competidor_producto_id as number))]
+    const allProdIds  = [...new Set([...propiosProdIds, ...compProdIds])]
 
-    // ── 3. Precios actuales de productos propios ──────────────────
-    const { data: preciosPropiosRaw } = await db
-      .from('precios_actuales')
-      .select('variante_id, precio_normal, precio_oferta')
-      .in('variante_id', varPropiosIds)
+    // ── 5. Variantes activas ──────────────────────────────────
+    const preciosPorProducto = new Map<number, number[]>()
 
-    // Precio efectivo promedio por producto_id
-    const precioPorProducto = new Map<number, number[]>()
-    for (const pp of (preciosPropiosRaw as any[] | null) ?? []) {
-      const prodId = varPropiosMap.get(pp.variante_id as number)
-      if (prodId === undefined) continue
-      const precio = +(pp.precio_oferta ?? pp.precio_normal)
-      if (!precioPorProducto.has(prodId)) precioPorProducto.set(prodId, [])
-      precioPorProducto.get(prodId)!.push(precio)
-    }
+    if (allProdIds.length > 0) {
+      const { data: varRaw } = await db
+        .from('producto_variantes')
+        .select('id, producto_id')
+        .in('producto_id', allProdIds)
+        .eq('activo', true)
 
-    // ── 4. Productos competidores con categoria_id ────────────────
-    const { data: prodCompRaw } = await db
-      .from('productos')
-      .select('id, marca, categoria_id')
-      .in('marca', competidores)
-      .eq('activo', true)
+      const variantes  = (varRaw as any[] | null) ?? []
+      const varProdMap = new Map<number, number>(
+        variantes.map((v: any) => [v.id, v.producto_id as number])
+      )
+      const allVarIds = variantes.map((v: any) => v.id as number)
 
-    const prodComp    = (prodCompRaw as any[] | null) ?? []
-    const compIds     = prodComp.map((p: any) => p.id)
+      if (allVarIds.length > 0) {
+        // ── 6. Precios actuales ───────────────────────────────
+        const { data: preciosRaw } = await db
+          .from('precios_actuales')
+          .select('variante_id, precio_normal, precio_oferta')
+          .in('variante_id', allVarIds)
 
-    // Map: producto_id → categoria_id para competidores
-    const compCatMap = new Map<number, number | null>(
-      prodComp.map((p: any) => [p.id, p.categoria_id ?? null])
-    )
-
-    // ── 5. Variantes y precios de competidores ────────────────────
-    const { data: varCompRaw } = await db
-      .from('producto_variantes')
-      .select('id, producto_id')
-      .in('producto_id', compIds)
-      .eq('activo', true)
-
-    const varComp    = (varCompRaw as any[] | null) ?? []
-    const varCompIds = varComp.map((v: any) => v.id)
-    const varCompMap = new Map<number, number>(
-      varComp.map((v: any) => [v.id, v.producto_id])
-    )
-
-    const { data: preciosCompRaw } = await db
-      .from('precios_actuales')
-      .select('variante_id, precio_normal, precio_oferta')
-      .in('variante_id', varCompIds)
-
-    // Precios por producto_id (competidor)
-    const preciosCompPorProducto = new Map<number, number[]>()
-    for (const pc of (preciosCompRaw as any[] | null) ?? []) {
-      const prodId = varCompMap.get(pc.variante_id as number)
-      if (prodId === undefined) continue
-      const precio = +(pc.precio_oferta ?? pc.precio_normal)
-      if (!preciosCompPorProducto.has(prodId)) preciosCompPorProducto.set(prodId, [])
-      preciosCompPorProducto.get(prodId)!.push(precio)
-    }
-
-    // ── 6. Precios de competidores agrupados por categoría ────────
-    // categoria_id → flat array of prices from all competitors in that category
-    const preciosCompPorCategoria = new Map<number, number[]>()
-    // También un pool global (fallback)
-    const preciosCompGlobal: number[] = []
-
-    for (const [prodId, precios] of preciosCompPorProducto.entries()) {
-      const catId = compCatMap.get(prodId)
-      preciosCompGlobal.push(...precios)
-      if (catId !== null && catId !== undefined) {
-        if (!preciosCompPorCategoria.has(catId)) preciosCompPorCategoria.set(catId, [])
-        preciosCompPorCategoria.get(catId)!.push(...precios)
+        for (const p of (preciosRaw as any[] | null) ?? []) {
+          const prodId = varProdMap.get(p.variante_id as number)
+          if (prodId === undefined) continue
+          const precio = +(p.precio_oferta ?? p.precio_normal)
+          if (!preciosPorProducto.has(prodId)) preciosPorProducto.set(prodId, [])
+          preciosPorProducto.get(prodId)!.push(precio)
+        }
       }
     }
 
-    if (preciosCompGlobal.length === 0) {
-      return NextResponse.json({ recomendaciones: [], total: 0 })
-    }
-
-    // Pre-compute global stats (fallback)
-    const globalMin  = Math.min(...preciosCompGlobal)
-    const globalMax  = Math.max(...preciosCompGlobal)
-    const globalProm = +(preciosCompGlobal.reduce((s, n) => s + n, 0) / preciosCompGlobal.length).toFixed(2)
-
-    // ── 7. Generar recomendación por producto propio ──────────────
+    // ── 7. Generar recomendación por item del catálogo ────────
     const recomendaciones: {
-      producto_id:             number
+      catalogo_id:             number
       nombre:                  string
       imagen_url:              string | null
       precio_propio_actual:    number
+      pvp_sugerido:            number | null
+      precio_source:           'pvp_sugerido' | 'scrapeado'
       precio_mercado_min:      number
       precio_mercado_promedio: number
       precio_mercado_max:      number
@@ -150,30 +127,45 @@ export async function GET() {
       accion:                  'bajar' | 'subir' | 'mantener'
       prioridad:               'alta' | 'media' | 'baja'
       impacto_estimado:        string
-      comparacion_tipo:        'categoria' | 'global'
+      competidores_count:      number
     }[] = []
 
-    for (const prod of prodPropios) {
-      const preciosArray = precioPorProducto.get(prod.id)
-      if (!preciosArray || preciosArray.length === 0) continue
+    for (const cat of catalogoConComp) {
+      const compIds = compsByCatalogo.get(cat.id as number) ?? []
 
-      const precioPropio = +(preciosArray.reduce((s, n) => s + n, 0) / preciosArray.length).toFixed(2)
+      // Precios de mercado: todos los precios scrapeados de los competidores enlazados
+      const preciosComp: number[] = []
+      for (const compProdId of compIds) {
+        preciosComp.push(...(preciosPorProducto.get(compProdId) ?? []))
+      }
 
-      // Elegir pool de referencia: categoría propia → fallback global
-      const catId = prod.categoria_id ?? null
-      const preciosRef = (catId !== null && (preciosCompPorCategoria.get(catId)?.length ?? 0) >= 2)
-        ? preciosCompPorCategoria.get(catId)!
-        : preciosCompGlobal
-      const comparacionTipo: 'categoria' | 'global' = (catId !== null && (preciosCompPorCategoria.get(catId)?.length ?? 0) >= 2)
-        ? 'categoria'
-        : 'global'
+      if (preciosComp.length === 0) continue
 
-      const mercadoMin  = Math.min(...preciosRef)
-      const mercadoMax  = Math.max(...preciosRef)
-      const mercadoProm = +(preciosRef.reduce((s, n) => s + n, 0) / preciosRef.length).toFixed(2)
+      // Precio propio: PVP sugerido (primario) → precio scrapeado (fallback)
+      let precioPropio: number | null = null
+      let precioSource: 'pvp_sugerido' | 'scrapeado' = 'pvp_sugerido'
+
+      if (cat.pvp_sugerido != null) {
+        precioPropio = +cat.pvp_sugerido
+        precioSource = 'pvp_sugerido'
+      } else if (cat.producto_id != null) {
+        const propios = preciosPorProducto.get(cat.producto_id as number) ?? []
+        if (propios.length > 0) {
+          precioPropio = +(propios.reduce((s: number, n: number) => s + n, 0) / propios.length).toFixed(2)
+          precioSource = 'scrapeado'
+        }
+      }
+
+      if (precioPropio === null) continue
+
+      const mercadoMin  = +Math.min(...preciosComp).toFixed(2)
+      const mercadoMax  = +Math.max(...preciosComp).toFixed(2)
+      const mercadoProm = +(preciosComp.reduce((s, n) => s + n, 0) / preciosComp.length).toFixed(2)
 
       const gapVsMin  = (precioPropio - mercadoMin)  / mercadoMin  * 100
       const gapVsProm = (precioPropio - mercadoProm) / mercadoProm * 100
+
+      const labelPrecio = precioSource === 'pvp_sugerido' ? 'PVP sugerido' : 'Precio'
 
       let recomendacion:   string
       let accion:          'bajar' | 'subir' | 'mantener'
@@ -181,13 +173,13 @@ export async function GET() {
       let impactoEstimado: string
 
       if (precioPropio > mercadoMin * 1.15) {
-        const pct = +gapVsMin.toFixed(0)
+        const pct  = +gapVsMin.toFixed(0)
         accion          = 'bajar'
-        recomendacion   = `Precio un ${pct}% sobre el mínimo ${comparacionTipo === 'categoria' ? 'de la categoría' : 'del mercado'} ($${mercadoMin.toFixed(2)})`
+        recomendacion   = `${labelPrecio} un ${pct}% sobre el mínimo del mercado ($${mercadoMin.toFixed(2)})`
         prioridad       = pct >= 30 ? 'alta' : pct >= 15 ? 'media' : 'baja'
         impactoEstimado = `Recuperar hasta ${Math.min(pct, 30)}% de share`
       } else if (precioPropio < mercadoMin) {
-        const margen = +(mercadoMin - precioPropio).toFixed(2)
+        const margen    = +(mercadoMin - precioPropio).toFixed(2)
         accion          = 'subir'
         recomendacion   = `Por debajo del mínimo — podrías subir hasta $${mercadoMin.toFixed(2)} (+$${margen})`
         prioridad       = margen > 2 ? 'alta' : margen > 0.5 ? 'media' : 'baja'
@@ -196,29 +188,31 @@ export async function GET() {
         const absPctProm = Math.abs(gapVsProm)
         accion          = 'mantener'
         recomendacion   = absPctProm <= 5
-          ? `Precio alineado con el ${comparacionTipo === 'categoria' ? 'promedio de la categoría' : 'mercado'}`
-          : `En rango del ${comparacionTipo === 'categoria' ? 'mercado por categoría' : 'mercado'} (${gapVsProm > 0 ? '+' : ''}${gapVsProm.toFixed(0)}% vs promedio)`
+          ? 'Precio alineado con el promedio del mercado'
+          : `En rango del mercado (${gapVsProm > 0 ? '+' : ''}${gapVsProm.toFixed(0)}% vs promedio)`
         prioridad       = 'baja'
         impactoEstimado = 'Mantener posición'
       }
 
       recomendaciones.push({
-        producto_id:             prod.id,
-        nombre:                  prod.nombre,
-        imagen_url:              prod.imagen_url ?? null,
-        precio_propio_actual:    precioPropio,
-        precio_mercado_min:      +mercadoMin.toFixed(2),
+        catalogo_id:             cat.id as number,
+        nombre:                  cat.nombre,
+        imagen_url:              cat.imagen_url ?? null,
+        precio_propio_actual:    +precioPropio.toFixed(2),
+        pvp_sugerido:            cat.pvp_sugerido != null ? +cat.pvp_sugerido : null,
+        precio_source:           precioSource,
+        precio_mercado_min:      mercadoMin,
         precio_mercado_promedio: mercadoProm,
-        precio_mercado_max:      +mercadoMax.toFixed(2),
+        precio_mercado_max:      mercadoMax,
         recomendacion,
         accion,
         prioridad,
         impacto_estimado:        impactoEstimado,
-        comparacion_tipo:        comparacionTipo,
+        competidores_count:      compIds.length,
       })
     }
 
-    const prioridadOrd = { alta: 0, media: 1, baja: 2 }
+    const prioridadOrd: Record<string, number> = { alta: 0, media: 1, baja: 2 }
     recomendaciones.sort((a, b) => prioridadOrd[a.prioridad] - prioridadOrd[b.prioridad])
 
     return NextResponse.json({ recomendaciones, total: recomendaciones.length })

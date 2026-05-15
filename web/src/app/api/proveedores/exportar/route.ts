@@ -14,7 +14,6 @@ const UMBRAL_PCT = 5
 function escaparCampo(valor: string | number | null | undefined): string {
   if (valor === null || valor === undefined) return ''
   const str = String(valor)
-  // Escapar campos que contengan comas, comillas o saltos de línea
   if (str.includes(',') || str.includes('"') || str.includes('\n')) {
     return `"${str.replace(/"/g, '""')}"`
   }
@@ -36,7 +35,7 @@ async function autenticarProveedor() {
 
   const { data: pRaw } = await db
     .from('proveedores')
-    .select('id,marcas,competidores')
+    .select('id')
     .limit(1)
     .single()
   const prov = pRaw as any
@@ -46,7 +45,7 @@ async function autenticarProveedor() {
 }
 
 function csvResponse(contenido: string, tipo: string): Response {
-  const bom = '﻿'
+  const bom  = '﻿'
   const body = bom + contenido
   return new Response(body, {
     headers: {
@@ -82,7 +81,6 @@ async function exportarCumplimiento(prov: any, db: any): Promise<string> {
     .filter((c: any) => c.producto_id != null)
     .map((c: any) => c.producto_id as number)
 
-  // preciosPorProducto: producto_id → [{ supNombre, precio_normal, precio_oferta }]
   type FilaPrecios = { supNombre: string; precio_normal: number; precio_oferta: number | null }
   const preciosPorProducto = new Map<number, FilaPrecios[]>()
 
@@ -173,32 +171,58 @@ async function exportarCumplimiento(prov: any, db: any): Promise<string> {
 // ─── Exportar tendencias ──────────────────────────────────────────────────────
 
 async function exportarTendencias(prov: any, db: any, dias: number): Promise<string> {
-  const marcasPropias: string[] = prov.marcas ?? []
-  const competidores: string[]  = prov.competidores ?? []
-  const todasLasMarcas = [...new Set([...marcasPropias, ...competidores])]
-
-  const encabezado = filaCSV(['Fecha', 'Marca', 'Precio Promedio'])
-
-  if (todasLasMarcas.length === 0) return encabezado
-
+  const encabezado = filaCSV(['Fecha', 'Producto', 'Tipo', 'Precio Promedio ($)'])
   const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString()
 
-  const { data: prodRaw } = await db
-    .from('productos')
-    .select('id, marca')
-    .in('marca', todasLasMarcas)
+  // ── 1. Catálogo propio con producto_id ───────────────────────
+  const { data: catalogoRaw } = await (db as any)
+    .from('proveedor_catalogo')
+    .select('id, nombre, producto_id')
+    .eq('proveedor_id', prov.id)
     .eq('activo', true)
+    .not('producto_id', 'is', null)
 
-  const productosData = (prodRaw as any[] | null) ?? []
-  const productIds    = productosData.map((p: any) => p.id)
-  const productoMarcaMap = new Map<number, string>(productosData.map((p: any) => [p.id, p.marca as string]))
+  const catalogo    = (catalogoRaw as any[] | null) ?? []
+  const catalogoIds = catalogo.map((c: any) => c.id as number)
 
-  if (productIds.length === 0) return encabezado
+  // Map: producto_id → label (catalog item nombre)
+  const propiosMap = new Map<number, string>(
+    catalogo.map((c: any) => [c.producto_id as number, c.nombre as string])
+  )
 
+  // ── 2. Competidores enlazados ────────────────────────────────
+  const { data: compLinksRaw } = await (db as any)
+    .from('proveedor_competidores_catalogo')
+    .select('competidor_producto_id')
+    .in('producto_id', catalogoIds.length > 0 ? catalogoIds : [-1])
+    .eq('activo', true)
+    .not('competidor_producto_id', 'is', null)
+
+  const compProdIds = [...new Set(
+    ((compLinksRaw as any[] | null) ?? []).map((c: any) => c.competidor_producto_id as number)
+  )]
+
+  const allProdIds = [...new Set([...propiosMap.keys(), ...compProdIds])]
+  if (allProdIds.length === 0) return encabezado
+
+  // ── 3. Nombres de productos competidores ─────────────────────
+  const compNombreMap = new Map<number, string>()
+  if (compProdIds.length > 0) {
+    const { data: prodRaw } = await db
+      .from('productos')
+      .select('id, nombre_normalizado')
+      .in('id', compProdIds)
+      .eq('activo', true)
+    for (const p of (prodRaw as any[] | null) ?? []) {
+      compNombreMap.set(p.id, p.nombre_normalizado)
+    }
+  }
+
+  // ── 4. Variantes ─────────────────────────────────────────────
   const { data: varRaw } = await db
     .from('producto_variantes')
     .select('id, producto_id')
-    .in('producto_id', productIds)
+    .in('producto_id', allProdIds)
     .eq('activo', true)
 
   const variantes       = (varRaw as any[] | null) ?? []
@@ -207,6 +231,7 @@ async function exportarTendencias(prov: any, db: any, dias: number): Promise<str
 
   if (varianteIds.length === 0) return encabezado
 
+  // ── 5. Precios históricos ────────────────────────────────────
   const { data: preciosRaw } = await db
     .from('precios')
     .select('variante_id, precio_normal, precio_oferta, fecha_hora')
@@ -214,35 +239,37 @@ async function exportarTendencias(prov: any, db: any, dias: number): Promise<str
     .gte('fecha_hora', desde)
     .order('fecha_hora', { ascending: true })
 
-  const agregado: Record<string, Record<string, { sum: number; count: number }>> = {}
+  // Agregado: key = `nombre||tipo||fecha`
+  const agregado = new Map<string, { nombre: string; tipo: string; fecha: string; sum: number; count: number }>()
 
   for (const p of (preciosRaw as any[] | null) ?? []) {
-    const productoId = varianteProdMap.get(p.variante_id as number)
-    if (productoId === undefined) continue
-    const marca = productoMarcaMap.get(productoId)
-    if (!marca) continue
+    const prodId = varianteProdMap.get(p.variante_id as number)
+    if (prodId === undefined) continue
 
-    const fecha          = (p.fecha_hora as string).split('T')[0]
-    const precioEfectivo = +(p.precio_oferta ?? p.precio_normal)
+    const esPropio = propiosMap.has(prodId)
+    const nombre   = esPropio ? (propiosMap.get(prodId) ?? '—') : (compNombreMap.get(prodId) ?? '—')
+    const tipo     = esPropio ? 'Propio' : 'Competidor'
+    const fecha    = (p.fecha_hora as string).split('T')[0]
+    const precio   = +(p.precio_oferta ?? p.precio_normal)
 
-    if (!agregado[marca])        agregado[marca] = {}
-    if (!agregado[marca][fecha]) agregado[marca][fecha] = { sum: 0, count: 0 }
-    agregado[marca][fecha].sum   += precioEfectivo
-    agregado[marca][fecha].count += 1
+    const key = `${nombre}||${tipo}||${fecha}`
+    if (!agregado.has(key)) agregado.set(key, { nombre, tipo, fecha, sum: 0, count: 0 })
+    const agg  = agregado.get(key)!
+    agg.sum   += precio
+    agg.count += 1
   }
 
   const filas: string[] = [encabezado]
-
-  const entradas: { fecha: string; marca: string; promedio: number }[] = []
-  for (const [marca, diasData] of Object.entries(agregado)) {
-    for (const [fecha, agg] of Object.entries(diasData)) {
-      entradas.push({ fecha, marca, promedio: +(agg.sum / agg.count).toFixed(2) })
-    }
-  }
-  entradas.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.marca.localeCompare(b.marca))
+  const entradas = [...agregado.values()].map(e => ({
+    fecha:    e.fecha,
+    nombre:   e.nombre,
+    tipo:     e.tipo,
+    promedio: +(e.sum / e.count).toFixed(2),
+  }))
+  entradas.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.nombre.localeCompare(b.nombre))
 
   for (const e of entradas) {
-    filas.push(filaCSV([e.fecha, e.marca, e.promedio.toFixed(2)]))
+    filas.push(filaCSV([e.fecha, e.nombre, e.tipo, e.promedio.toFixed(2)]))
   }
 
   return filas.join('\r\n')
@@ -251,31 +278,51 @@ async function exportarTendencias(prov: any, db: any, dias: number): Promise<str
 // ─── Exportar alertas ─────────────────────────────────────────────────────────
 
 async function exportarAlertas(prov: any, db: any): Promise<string> {
-  const competidores: string[] = prov.competidores ?? []
-
   const encabezado = filaCSV([
-    'Marca Competidora', 'Producto', 'Supermercado',
-    'Precio Normal', 'Precio Oferta', 'Descuento%',
+    'Producto Competidor', 'Marca', 'Supermercado',
+    'Precio Normal ($)', 'Precio Oferta ($)', 'Descuento%',
     'Estado', 'Horas Activa',
   ])
 
-  if (competidores.length === 0) return encabezado
+  // ── 1. Catálogo propio ───────────────────────────────────────
+  const { data: catalogoRaw } = await (db as any)
+    .from('proveedor_catalogo')
+    .select('id')
+    .eq('proveedor_id', prov.id)
+    .eq('activo', true)
 
+  const catalogoIds = ((catalogoRaw as any[] | null) ?? []).map((c: any) => c.id as number)
+  if (catalogoIds.length === 0) return encabezado
+
+  // ── 2. Competidores enlazados ────────────────────────────────
+  const { data: compLinksRaw } = await (db as any)
+    .from('proveedor_competidores_catalogo')
+    .select('competidor_producto_id')
+    .in('producto_id', catalogoIds)
+    .eq('activo', true)
+    .not('competidor_producto_id', 'is', null)
+
+  const compProdIds = [...new Set(
+    ((compLinksRaw as any[] | null) ?? []).map((c: any) => c.competidor_producto_id as number)
+  )]
+  if (compProdIds.length === 0) return encabezado
+
+  // ── 3. Productos competidores ────────────────────────────────
   // Manual joins — precios_actuales is a materialized view; PostgREST cannot infer FKs
   const { data: prodRaw } = await db
     .from('productos')
     .select('id, nombre_normalizado, marca')
-    .in('marca', competidores)
+    .in('id', compProdIds)
     .eq('activo', true)
 
-  const prodComp   = (prodRaw as any[] | null) ?? []
+  const prodComp = (prodRaw as any[] | null) ?? []
   if (prodComp.length === 0) return encabezado
 
   const prodInfoMap = new Map<number, { nombre: string; marca: string }>(
     prodComp.map((p: any) => [p.id, { nombre: p.nombre_normalizado, marca: p.marca }])
   )
-  const compProdIds = prodComp.map((p: any) => p.id)
 
+  // ── 4. Variantes ─────────────────────────────────────────────
   const { data: varRaw } = await db
     .from('producto_variantes')
     .select('id, producto_id')
@@ -287,6 +334,7 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
   const compVarIds = varComp.map((v: any) => v.id)
   if (compVarIds.length === 0) return encabezado
 
+  // ── 5. Precios actuales en oferta ────────────────────────────
   const { data: ofertasRaw } = await db
     .from('precios_actuales')
     .select('variante_id, supermercado_id, precio_normal, precio_oferta, descuento_pct')
@@ -297,6 +345,7 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
   const filas_raw = (ofertasRaw as any[] | null) ?? []
   if (filas_raw.length === 0) return encabezado
 
+  // ── 6. Supermercados ─────────────────────────────────────────
   const superIdsNeeded = [...new Set(filas_raw.map((f: any) => f.supermercado_id))]
   const superMap = new Map<number, string>()
   if (superIdsNeeded.length > 0) {
@@ -304,11 +353,10 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
       .from('supermercados')
       .select('id, nombre')
       .in('id', superIdsNeeded)
-    for (const s of (superRaw as any[] | null) ?? []) {
-      superMap.set(s.id, s.nombre)
-    }
+    for (const s of (superRaw as any[] | null) ?? []) superMap.set(s.id, s.nombre)
   }
 
+  // ── 7. Inicio de ofertas (últimos 7 días) ────────────────────
   const varianteIds = filas_raw.map((f: any) => f.variante_id)
   const hace7dias   = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
@@ -325,13 +373,14 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
     if (!inicioOferta.has(r.variante_id)) inicioOferta.set(r.variante_id, r.fecha_hora)
   }
 
+  // ── 8. Construir CSV ─────────────────────────────────────────
   const filas: string[] = [encabezado]
 
   for (const f of filas_raw) {
-    const prodId  = varProdMap.get(f.variante_id)
-    const prod    = prodId !== undefined ? prodInfoMap.get(prodId) : undefined
-    const super_  = superMap.get(f.supermercado_id) ?? '—'
-    const inicio  = inicioOferta.get(f.variante_id) ?? null
+    const prodId      = varProdMap.get(f.variante_id)
+    const prod        = prodId !== undefined ? prodInfoMap.get(prodId) : undefined
+    const super_      = superMap.get(f.supermercado_id) ?? '—'
+    const inicio      = inicioOferta.get(f.variante_id) ?? null
     const horasActiva = inicio
       ? Math.round((Date.now() - new Date(inicio).getTime()) / 3_600_000)
       : null
@@ -342,8 +391,8 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
       'vigente'
 
     filas.push(filaCSV([
-      prod?.marca  ?? '—',
       prod?.nombre ?? '—',
+      prod?.marca  ?? '—',
       super_,
       (+f.precio_normal).toFixed(2),
       f.precio_oferta != null ? (+f.precio_oferta).toFixed(2) : '',

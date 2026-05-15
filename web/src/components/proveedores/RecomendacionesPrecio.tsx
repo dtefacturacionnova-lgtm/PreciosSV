@@ -3,17 +3,19 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   Lightbulb, RefreshCw, TrendingDown, TrendingUp, Minus,
-  Package, AlertTriangle, Settings,
+  Package, AlertTriangle, Settings, Tag,
 } from 'lucide-react'
 import clsx from 'clsx'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Recomendacion {
-  producto_id:             number
+  catalogo_id:             number
   nombre:                  string
   imagen_url:              string | null
   precio_propio_actual:    number
+  pvp_sugerido:            number | null
+  precio_source:           'pvp_sugerido' | 'scrapeado'
   precio_mercado_min:      number
   precio_mercado_promedio: number
   precio_mercado_max:      number
@@ -21,7 +23,7 @@ interface Recomendacion {
   accion:                  'bajar' | 'subir' | 'mantener'
   prioridad:               'alta' | 'media' | 'baja'
   impacto_estimado:        string
-  comparacion_tipo?:       'categoria' | 'global'
+  competidores_count:      number
 }
 
 interface RecomendacionesData {
@@ -37,9 +39,9 @@ const ACCION_META: Record<Recomendacion['accion'], {
   text:  string
   icon:  typeof TrendingDown
 }> = {
-  bajar:    { label: 'BAJAR',    bg: 'bg-red-100',    text: 'text-red-700',     icon: TrendingDown },
+  bajar:    { label: 'BAJAR',    bg: 'bg-red-100',     text: 'text-red-700',     icon: TrendingDown },
   subir:    { label: 'SUBIR',    bg: 'bg-emerald-100', text: 'text-emerald-700', icon: TrendingUp   },
-  mantener: { label: 'MANTENER', bg: 'bg-slate-100',  text: 'text-slate-600',   icon: Minus        },
+  mantener: { label: 'MANTENER', bg: 'bg-slate-100',   text: 'text-slate-600',   icon: Minus        },
 }
 
 const PRIORIDAD_META: Record<Recomendacion['prioridad'], {
@@ -47,17 +49,22 @@ const PRIORIDAD_META: Record<Recomendacion['prioridad'], {
   bg:    string
   text:  string
 }> = {
-  alta:  { label: 'Alta',  bg: 'bg-red-50',      text: 'text-red-600'    },
-  media: { label: 'Media', bg: 'bg-amber-50',    text: 'text-amber-600'  },
-  baja:  { label: 'Baja',  bg: 'bg-slate-50',    text: 'text-slate-500'  },
+  alta:  { label: 'Alta',  bg: 'bg-red-50',   text: 'text-red-600'   },
+  media: { label: 'Media', bg: 'bg-amber-50', text: 'text-amber-600' },
+  baja:  { label: 'Baja',  bg: 'bg-slate-50', text: 'text-slate-500' },
 }
 
 // ─── Tarjeta de recomendación ─────────────────────────────────────────────────
 
 function TarjetaRecomendacion({ rec }: { rec: Recomendacion }) {
-  const accion   = ACCION_META[rec.accion]
-  const prioridad = PRIORIDAD_META[rec.prioridad]
+  const accion     = ACCION_META[rec.accion]
+  const prioridad  = PRIORIDAD_META[rec.prioridad]
   const IconAccion = accion.icon
+
+  // Etiqueta del precio propio según la fuente
+  const labelPrecioPropio = rec.precio_source === 'pvp_sugerido'
+    ? 'Tu PVP sugerido'
+    : 'Tu precio (scrapeado)'
 
   return (
     <div className={clsx(
@@ -71,6 +78,7 @@ function TarjetaRecomendacion({ rec }: { rec: Recomendacion }) {
       {/* Imagen del producto */}
       <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center flex-shrink-0">
         {rec.imagen_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={rec.imagen_url}
             alt={rec.nombre}
@@ -83,10 +91,9 @@ function TarjetaRecomendacion({ rec }: { rec: Recomendacion }) {
 
       {/* Info principal */}
       <div className="flex-1 min-w-0">
+        {/* Encabezado: nombre + badge de acción */}
         <div className="flex items-start justify-between gap-2 mb-2">
           <p className="text-sm font-semibold text-slate-800 truncate flex-1">{rec.nombre}</p>
-
-          {/* Badge de acción */}
           <span className={clsx(
             'inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0',
             accion.bg, accion.text,
@@ -97,43 +104,49 @@ function TarjetaRecomendacion({ rec }: { rec: Recomendacion }) {
         </div>
 
         {/* Precios */}
-        <div className="flex items-center gap-3 mb-2 flex-wrap">
+        <div className="flex items-start gap-4 mb-2 flex-wrap">
+          {/* Precio propio */}
           <div>
-            <p className="text-xs text-slate-400">Tu precio actual</p>
-            <p className="text-base font-bold text-slate-800">
-              ${rec.precio_propio_actual.toFixed(2)}
-            </p>
+            <p className="text-xs text-slate-400">{labelPrecioPropio}</p>
+            <div className="flex items-baseline gap-1.5">
+              <p className="text-base font-bold text-slate-800">
+                ${rec.precio_propio_actual.toFixed(2)}
+              </p>
+              {/* Si la fuente es pvp_sugerido y hay precio scrapeado diferente, podemos mostrarlo */}
+              {rec.precio_source === 'pvp_sugerido' && (
+                <Tag className="w-3 h-3 text-violet-400 flex-shrink-0" aria-label="Precio sugerido al canal" />
+              )}
+            </div>
           </div>
-          <div className="text-slate-300">vs.</div>
+
+          <div className="text-slate-300 mt-4">vs.</div>
+
+          {/* Mercado */}
           <div>
-            <p className="text-xs text-slate-400">Rango mercado</p>
+            <p className="text-xs text-slate-400">Mercado ({rec.competidores_count} comp.)</p>
             <p className="text-sm font-semibold text-slate-600">
               ${rec.precio_mercado_min.toFixed(2)}
               <span className="text-slate-400 font-normal"> — </span>
               ${rec.precio_mercado_max.toFixed(2)}
             </p>
-            <p className="text-xs text-slate-400">
-              prom. ${rec.precio_mercado_promedio.toFixed(2)}
-            </p>
+            <p className="text-xs text-slate-400">prom. ${rec.precio_mercado_promedio.toFixed(2)}</p>
           </div>
         </div>
 
         {/* Texto de recomendación */}
         <p className="text-xs text-slate-600 leading-relaxed mb-2">{rec.recomendacion}</p>
 
-        {/* Impacto + prioridad + tipo comparación */}
+        {/* Impacto + prioridad */}
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-slate-400">{rec.impacto_estimado}</span>
-          {rec.comparacion_tipo && (
-            <span className={clsx(
-              'text-[10px] font-medium px-1.5 py-0.5 rounded-full',
-              rec.comparacion_tipo === 'categoria'
-                ? 'bg-violet-50 text-violet-600'
-                : 'bg-slate-100 text-slate-500',
-            )}>
-              {rec.comparacion_tipo === 'categoria' ? 'Por categoría' : 'Mercado global'}
-            </span>
-          )}
+          <span className={clsx(
+            'text-[10px] font-medium px-1.5 py-0.5 rounded-full',
+            rec.precio_source === 'pvp_sugerido'
+              ? 'bg-violet-50 text-violet-600'
+              : 'bg-slate-100 text-slate-500',
+          )}>
+            {rec.precio_source === 'pvp_sugerido' ? 'Basado en PVP' : 'Basado en scraping'}
+          </span>
           <span className={clsx(
             'text-xs font-semibold px-2 py-0.5 rounded-full ml-auto',
             prioridad.bg, prioridad.text,
@@ -192,14 +205,15 @@ export default function RecomendacionesPrecio() {
 
   if (!data) return null
 
-  // ── Sin datos (sin competidores) ────────────────────────────────
+  // ── Sin datos ───────────────────────────────────────────────────
   if (data.total === 0) {
     return (
       <div className="bg-white border border-slate-100 rounded-2xl p-8 text-center">
         <Settings className="w-8 h-8 text-slate-300 mx-auto mb-2" />
         <p className="text-slate-500 text-sm mb-1">Sin recomendaciones disponibles</p>
         <p className="text-xs text-slate-400">
-          Configura tus competidores en la pestaña Comparativa para ver recomendaciones de precio.
+          Agrega productos a Mi Catálogo con PVP sugerido y asigna competidores
+          para ver recomendaciones de precio.
         </p>
       </div>
     )
@@ -236,12 +250,13 @@ export default function RecomendacionesPrecio() {
       {/* Lista de recomendaciones */}
       <div className="space-y-3">
         {data.recomendaciones.map(rec => (
-          <TarjetaRecomendacion key={rec.producto_id} rec={rec} />
+          <TarjetaRecomendacion key={rec.catalogo_id} rec={rec} />
         ))}
       </div>
 
       <p className="text-xs text-center text-slate-400">
-        Comparación por categoría cuando hay ≥2 precios de competidores en la misma; mercado global como fallback
+        PVP sugerido vs. precios scrapeados de competidores enlazados en Mi Catálogo ·
+        {' '}Precio &gt; mínimo × 1.15 → acción recomendada
       </p>
     </div>
   )

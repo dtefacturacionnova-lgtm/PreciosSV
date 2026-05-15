@@ -184,36 +184,68 @@ class ScraperSelectos:
                 self.productos.append(producto)
 
     def _parece_producto(self, item: dict) -> bool:
-        """Heurística: ¿tiene campos de precio y nombre?"""
+        """
+        Heurística: ¿tiene campos de precio y nombre?
+        Cubre tanto la API flat de Selectos como la estructura anidada de VTEX IO.
+        """
         tiene_precio = any(k in item for k in (
-            "Price", "precio", "price", "ListPrice", "PriceWithDiscount"
-        ))
+            "Price", "precio", "price", "ListPrice", "PriceWithDiscount",
+            # VTEX IO: precio está anidado en items[].sellers[].commertialOffer
+            # pero si el objeto tiene "items" con sellers → es un producto VTEX
+            "priceRange", "spotPrice",
+        )) or (
+            # VTEX IO product object: precios dentro de items[]
+            "items" in item and isinstance(item.get("items"), list) and bool(item["items"])
+        )
         tiene_nombre = any(k in item for k in (
-            "ProductName", "nombre", "name", "Name", "Title"
+            "ProductName", "productName",   # VTEX catalog + VTEX IO
+            "nombre", "name", "Name", "Title",
         ))
         return tiene_precio and tiene_nombre
 
     def _parsear_producto(self, item: dict) -> Optional[dict]:
         """
         Normaliza los campos del JSON de Selectos al formato interno.
-        Selectos puede usar diferentes nombres de campo según la versión de su API.
+        Cubre dos formatos:
+          • Flat: API propia de Selectos (Price, ProductName, EAN en raíz)
+          • VTEX IO nested: items[0].ean, items[0].sellers[0].commertialOffer.Price
         """
         try:
-            # Nombre — varios nombres posibles
+            # ── SKU anidado (VTEX IO) vs flat ─────────────────
+            nested_items = item.get("items") or item.get("Items") or []
+            sku_nested: dict = (
+                nested_items[0]
+                if nested_items and isinstance(nested_items, list) and isinstance(nested_items[0], dict)
+                else {}
+            )
+
+            # ── Nombre ─────────────────────────────────────────
             nombre = (
-                item.get("ProductName")
+                item.get("productName")        # VTEX IO
+                or item.get("ProductName")
                 or item.get("Name")
                 or item.get("nombre")
                 or item.get("name")
+                or sku_nested.get("nameComplete")
                 or ""
             ).strip()
 
             if not nombre:
                 return None
 
-            # Precio normal
+            # ── Precios ─────────────────────────────────────────
+            # Intentar extraer desde seller anidado (VTEX IO)
+            sellers_nested = sku_nested.get("sellers") or []
+            offer_nested: dict = (
+                sellers_nested[0].get("commertialOffer", {})
+                if sellers_nested and isinstance(sellers_nested[0], dict)
+                else {}
+            )
+
             precio_normal_raw = (
-                item.get("ListPrice")
+                offer_nested.get("ListPrice")
+                or offer_nested.get("Price")
+                or item.get("ListPrice")
                 or item.get("PriceWithoutDiscount")
                 or item.get("Price")
                 or item.get("precio")
@@ -221,17 +253,22 @@ class ScraperSelectos:
             )
             precio_normal = Decimal(str(precio_normal_raw))
 
-            # Precio oferta
             precio_oferta_raw = (
+                offer_nested.get("Price") if offer_nested.get("Price") and
+                    Decimal(str(offer_nested.get("Price", 0))) < precio_normal else None
+            ) or (
                 item.get("PriceWithDiscount")
                 or item.get("SalePrice")
                 or item.get("precioOferta")
             )
             precio_oferta = Decimal(str(precio_oferta_raw)) if precio_oferta_raw else None
 
-            # Validar que la oferta sea realmente menor
+            # Validar que precio_oferta sea realmente menor
             if precio_oferta and precio_oferta >= precio_normal:
                 precio_oferta = None
+
+            if precio_normal <= 0:
+                return None
 
             en_oferta = precio_oferta is not None
             descuento_pct = None
@@ -240,39 +277,78 @@ class ScraperSelectos:
                     float((precio_normal - precio_oferta) / precio_normal * 100), 2
                 )
 
-            # ID / SKU
-            sku = (
-                str(item.get("ProductId") or item.get("Id") or item.get("id") or "")
+            # ── EAN ─────────────────────────────────────────────
+            ean = (
+                item.get("EAN") or item.get("ean")                 # API flat
+                or sku_nested.get("ean") or sku_nested.get("EAN")  # VTEX IO nested
+                or None
+            )
+            if not ean:
+                # referenceId en SKU anidado: [{"Key": "RefId", "Value": "..."}]
+                for ref in (sku_nested.get("referenceId") or []):
+                    if isinstance(ref, dict):
+                        k = ref.get("Key", "").upper()
+                        if k in ("EAN", "GTIN", "EAN13", "BARCODE"):
+                            v = str(ref.get("Value", "")).strip()
+                            if v:
+                                ean = v
+                                break
+
+            # ── SKU / ID ────────────────────────────────────────
+            sku = str(
+                item.get("productId") or item.get("ProductId")
+                or item.get("Id") or item.get("id")
+                or sku_nested.get("itemId")
+                or ""
             )
 
-            # Imagen
+            # ── Imagen ──────────────────────────────────────────
+            imagenes_nested = sku_nested.get("images") or []
             imagen_url = (
-                item.get("ImageUrl")
+                (imagenes_nested[0].get("imageUrl") if imagenes_nested else None)
+                or item.get("ImageUrl")
                 or item.get("imagen")
                 or item.get("image")
             )
 
-            # URL del producto
-            link_text = item.get("LinkText") or item.get("slug") or ""
-            url_producto = f"{BASE_URL}/produto/{link_text}" if link_text else BASE_URL
+            # ── URL del producto ────────────────────────────────
+            link_text = (
+                item.get("linkText") or item.get("LinkText") or item.get("slug") or ""
+            )
+            url_producto = f"{BASE_URL}/{link_text}/p" if link_text else BASE_URL
+
+            # ── Marca ────────────────────────────────────────────
+            marca = (
+                item.get("brand") or item.get("BrandName") or item.get("Brand")
+                or item.get("marca")
+                or ""
+            ).strip() or None
+
+            # ── Disponibilidad ──────────────────────────────────
+            disponible = (
+                offer_nested.get("IsAvailable", True)
+                if offer_nested else item.get("IsAvailable", True)
+            )
 
             return {
                 "supermercado_key": "selectos",
-                "nombre_local": nombre,
-                "marca": (item.get("BrandName") or item.get("Brand") or item.get("marca") or "").strip() or None,
-                "sku_local": sku,
-                "ean": item.get("EAN") or item.get("ean") or None,
-                "precio_normal": precio_normal,
-                "precio_oferta": precio_oferta,
-                "en_oferta": en_oferta,
-                "descuento_pct": descuento_pct,
-                "descripcion": (item.get("Description") or item.get("descripcion") or "").strip() or None,
-                "imagen_url": imagen_url,
-                "url_producto": url_producto,
-                "disponible": item.get("IsAvailable", True),
+                "nombre_local":     nombre,
+                "marca":            marca,
+                "sku_local":        sku,
+                "ean":              ean,
+                "precio_normal":    precio_normal,
+                "precio_oferta":    precio_oferta,
+                "en_oferta":        en_oferta,
+                "descuento_pct":    descuento_pct,
+                "descripcion":      (item.get("Description") or item.get("description") or item.get("descripcion") or "").strip() or None,
+                "imagen_url":       imagen_url,
+                "url_producto":     url_producto,
+                "disponible":       disponible,
                 "condicion_oferta": item.get("PromotionName") or item.get("condicion") or None,
-                "categoria_nombre": item.get("CategoryName") or item.get("categoria") or None,
-                "fecha_hora": datetime.now(timezone.utc).isoformat(),
+                "categoria_nombre": item.get("categories", [None])[0] if item.get("categories") else (
+                    item.get("CategoryName") or item.get("categoria") or None
+                ),
+                "fecha_hora":       datetime.now(timezone.utc).isoformat(),
             }
 
         except Exception as e:

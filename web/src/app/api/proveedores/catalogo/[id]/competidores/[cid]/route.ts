@@ -88,6 +88,7 @@ export async function PATCH(
     const allowed = [
       'competidor_ean_13', 'competidor_upc_12',
       'competidor_nombre', 'competidor_marca',
+      'competidor_producto_id',       // vínculo manual a producto scrapeado
       'tipo_relacion', 'factor_conversion',
       'misma_presentacion', 'prioridad', 'notas', 'activo',
     ]

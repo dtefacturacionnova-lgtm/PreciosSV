@@ -40,6 +40,7 @@ export async function PATCH(
       'ean_13', 'upc_12', 'codigo_interno', 'imagen_url',
       'pvp_sugerido', 'notas', 'categoria_id', 'activo',
       'categoria', 'subcategoria',   // taxonomía libre del proveedor
+      'producto_id',                 // vínculo manual a producto scrapeado
     ]
     const updates: Record<string, any> = { updated_at: new Date().toISOString() }
     for (const key of allowed) {

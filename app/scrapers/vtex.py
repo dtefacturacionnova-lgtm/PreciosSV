@@ -284,6 +284,32 @@ class ScraperVTEX:
                     float((precio_normal - precio_oferta) / precio_normal * 100), 2
                 )
 
+            # EAN — intentar múltiples ubicaciones que usa VTEX
+            ean = sku.get("ean") or None
+
+            if not ean:
+                # Algunos stores VTEX guardan EAN en referenceId[{Key:"RefId", Value:"..."}]
+                for ref in (sku.get("referenceId") or []):
+                    if isinstance(ref, dict):
+                        k = ref.get("Key", "").upper()
+                        if k in ("EAN", "GTIN", "EAN13", "BARCODE", "CODIGO_BARRAS"):
+                            v = str(ref.get("Value", "")).strip()
+                            if v:
+                                ean = v
+                                break
+
+            if not ean:
+                # Último fallback: SkuSpecifications (algunas tiendas VTEX Enterprise)
+                for spec in (sku.get("SkuSpecifications") or []):
+                    if not isinstance(spec, dict):
+                        continue
+                    field_name = (spec.get("Field") or {}).get("Name", "").upper()
+                    if field_name in ("EAN", "EAN-13", "GTIN", "CODIGO DE BARRAS"):
+                        vals = spec.get("Values") or []
+                        if vals:
+                            ean = str(vals[0]).strip() or None
+                            break
+
             # Imagen
             imagenes = sku.get("images", [])
             imagen_url = imagenes[0].get("imageUrl") if imagenes else None
@@ -300,7 +326,7 @@ class ScraperVTEX:
                 "nombre_local": item.get("productName", "").strip(),
                 "marca": (item.get("brand") or "").strip() or None,
                 "sku_local": str(item.get("productId", "")),
-                "ean": sku.get("ean") or None,
+                "ean": ean,
                 "precio_normal": precio_normal,
                 "precio_oferta": precio_oferta,
                 "en_oferta": en_oferta,

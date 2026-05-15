@@ -3,6 +3,11 @@
  * Detecta cambios de precio inusuales en los últimos 7 días comparados
  * contra los 7 días previos (baseline).
  * Criterios: cambio absoluto > 2σ  O  cambio relativo > 15%
+ *
+ * Fuente de datos: proveedor_catalogo (productos propios) +
+ *   proveedor_competidores_catalogo (competidores del catálogo).
+ *
+ * es_propio = true si el producto pertenece al catálogo propio.
  */
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
@@ -13,32 +18,59 @@ export async function GET() {
   try {
     const db = createServiceClient()
 
+    // ── 1. Proveedor ─────────────────────────────────────────
     const { data: pRaw } = await db
       .from('proveedores')
-      .select('id,marcas,competidores')
+      .select('id')
       .limit(1)
       .single()
     const prov = pRaw as any
     if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
 
-    const marcasPropias: string[] = prov.marcas ?? []
-    const competidores:  string[] = prov.competidores ?? []
-    const todasLasMarcas = [...new Set([...marcasPropias, ...competidores])]
+    // ── 2. Catálogo propio (sólo items enlazados) ─────────────
+    const { data: catalogoRaw } = await (db as any)
+      .from('proveedor_catalogo')
+      .select('id, producto_id')
+      .eq('proveedor_id', prov.id)
+      .eq('activo', true)
+      .not('producto_id', 'is', null)
 
-    if (todasLasMarcas.length === 0) {
+    const catalogo       = (catalogoRaw as any[] | null) ?? []
+    const catalogoIds    = catalogo.map((c: any) => c.id as number)
+    const propiosProdIds = new Set<number>(catalogo.map((c: any) => c.producto_id as number))
+
+    if (catalogoIds.length === 0) {
+      return NextResponse.json({ anomalias: [], total: 0, sin_historial: true })
+    }
+
+    // ── 3. Competidores enlazados vía catálogo ────────────────
+    const { data: compLinksRaw } = await (db as any)
+      .from('proveedor_competidores_catalogo')
+      .select('competidor_producto_id')
+      .in('producto_id', catalogoIds)
+      .eq('activo', true)
+      .not('competidor_producto_id', 'is', null)
+
+    const compProdIds = [...new Set(
+      ((compLinksRaw as any[] | null) ?? []).map((c: any) => c.competidor_producto_id as number)
+    )]
+
+    const allProdIds = [...new Set([...propiosProdIds, ...compProdIds])]
+
+    if (allProdIds.length === 0) {
       return NextResponse.json({ anomalias: [], total: 0, sin_historial: true })
     }
 
     // Ventana de 14 días: días 0-6 = baseline, días 7-13 = recientes
-    const ahora    = new Date()
-    const hace14d  = new Date(ahora.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString()
-    const hace7d   = new Date(ahora.getTime() -  7 * 24 * 60 * 60 * 1000).toISOString()
+    const ahora   = new Date()
+    const hace14d = new Date(ahora.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString()
+    const hace7d  = new Date(ahora.getTime() -  7 * 24 * 60 * 60 * 1000).toISOString()
 
-    // ── 1. Productos de las marcas ────────────────────────────────
+    // ── 4. Info de productos ──────────────────────────────────
     const { data: prodRaw } = await db
       .from('productos')
       .select('id, nombre, marca, imagen_url')
-      .in('marca', todasLasMarcas)
+      .in('id', allProdIds)
       .eq('activo', true)
 
     const productosData = (prodRaw as any[] | null) ?? []
@@ -46,12 +78,20 @@ export async function GET() {
       return NextResponse.json({ anomalias: [], total: 0, sin_historial: true })
     }
 
-    const productoMap = new Map<number, { nombre: string; marca: string; imagen_url: string | null }>(
-      productosData.map((p: any) => [p.id, { nombre: p.nombre, marca: p.marca, imagen_url: p.imagen_url ?? null }])
+    const productoMap = new Map<number, {
+      nombre: string; marca: string; imagen_url: string | null; es_propio: boolean
+    }>(
+      productosData.map((p: any) => [p.id, {
+        nombre:     p.nombre,
+        marca:      p.marca,
+        imagen_url: p.imagen_url ?? null,
+        es_propio:  propiosProdIds.has(p.id),
+      }])
     )
-    const productIds = productosData.map((p: any) => p.id)
 
-    // ── 2. Variantes (incluye supermercado_id para identificar cadena) ───
+    const productIds = productosData.map((p: any) => p.id as number)
+
+    // ── 5. Variantes ──────────────────────────────────────────
     const { data: varRaw } = await db
       .from('producto_variantes')
       .select('id, producto_id, supermercado_id, descripcion')
@@ -63,30 +103,29 @@ export async function GET() {
       return NextResponse.json({ anomalias: [], total: 0, sin_historial: true })
     }
 
-    const varianteMap = new Map<number, { producto_id: number; supermercado_id: number; descripcion: string | null }>(
+    const varianteMap = new Map<number, {
+      producto_id: number; supermercado_id: number; descripcion: string | null
+    }>(
       variantes.map((v: any) => [v.id, {
-        producto_id:    v.producto_id,
+        producto_id:     v.producto_id,
         supermercado_id: v.supermercado_id,
-        descripcion:    v.descripcion ?? null,
+        descripcion:     v.descripcion ?? null,
       }])
     )
-    const varianteIds = variantes.map((v: any) => v.id)
+    const varianteIds = variantes.map((v: any) => v.id as number)
 
-    // ── 3. Supermercados (para nombre y color) ────────────────────
+    // ── 6. Supermercados ──────────────────────────────────────
     const { data: superRaw } = await db
       .from('supermercados')
       .select('id, nombre_corto, nombre, color_hex')
 
-    // indexed by supermercado ID
     const superMap = new Map<number, { key: string; nombre: string; color: string }>(
       ((superRaw as any[] | null) ?? []).map((s: any) => [
         s.id, { key: s.nombre_corto, nombre: s.nombre, color: s.color_hex }
       ])
     )
 
-    // ── 4. Precios de los últimos 14 días ─────────────────────────
-    // Note: precios has no supermercado column — the supermercado is
-    // encoded via variante_id → producto_variantes.supermercado_id
+    // ── 7. Precios de los últimos 14 días ─────────────────────
     const { data: preciosRaw } = await db
       .from('precios')
       .select('variante_id, precio_normal, precio_oferta, fecha_hora')
@@ -96,24 +135,21 @@ export async function GET() {
 
     const precios = (preciosRaw as any[] | null) ?? []
 
-    // Agrupar por variante_id (cada variante es única por supermercado)
+    // Agrupar en ventana baseline / reciente
     type GrupoPrecios = { baseline: number[]; reciente: number[] }
     const grupos = new Map<number, GrupoPrecios>()
 
     for (const p of precios) {
       const vid = p.variante_id as number
       if (!grupos.has(vid)) grupos.set(vid, { baseline: [], reciente: [] })
-      const g = grupos.get(vid)!
+      const g              = grupos.get(vid)!
       const precioEfectivo = +(p.precio_oferta ?? p.precio_normal)
-      const esReciente = p.fecha_hora >= hace7d
-      if (esReciente) {
-        g.reciente.push(precioEfectivo)
-      } else {
-        g.baseline.push(precioEfectivo)
-      }
+      const esReciente     = p.fecha_hora >= hace7d
+      if (esReciente) g.reciente.push(precioEfectivo)
+      else            g.baseline.push(precioEfectivo)
     }
 
-    // ── 5. Detectar anomalías ─────────────────────────────────────
+    // ── 8. Detectar anomalías ─────────────────────────────────
     function promedio(arr: number[]): number {
       return arr.reduce((s, n) => s + n, 0) / arr.length
     }
@@ -124,17 +160,17 @@ export async function GET() {
     }
 
     const anomalias: {
-      variante_id:    number
-      nombre:         string
-      supermercado:   string
-      color:          string
-      marca:          string
-      es_propio:      boolean
+      variante_id:     number
+      nombre:          string
+      supermercado:    string
+      color:           string
+      marca:           string
+      es_propio:       boolean
       precio_anterior: number
       precio_actual:   number
       cambio_pct:      number
-      tipo:           'subida_brusca' | 'bajada_brusca'
-      detectado_en:   string
+      tipo:            'subida_brusca' | 'bajada_brusca'
+      detectado_en:    string
     }[] = []
 
     for (const [varianteId, g] of grupos) {
@@ -144,19 +180,19 @@ export async function GET() {
       const sigma     = desviacion(g.baseline, mediaBase)
       const mediaRec  = promedio(g.reciente)
 
-      const cambioPct   = +((mediaRec - mediaBase) / mediaBase * 100).toFixed(1)
-      const cambioAbso  = Math.abs(mediaRec - mediaBase)
+      const cambioPct  = +((mediaRec - mediaBase) / mediaBase * 100).toFixed(1)
+      const cambioAbso = Math.abs(mediaRec - mediaBase)
 
       const umbralSigma = sigma > 0 && cambioAbso > 2 * sigma
       const umbralPct   = Math.abs(cambioPct) > 15
 
       if (!umbralSigma && !umbralPct) continue
 
-      const varInfo    = varianteMap.get(varianteId)
+      const varInfo  = varianteMap.get(varianteId)
       if (!varInfo) continue
-      const prodInfo   = productoMap.get(varInfo.producto_id)
+      const prodInfo = productoMap.get(varInfo.producto_id)
       if (!prodInfo) continue
-      const superInfo  = superMap.get(varInfo.supermercado_id)
+      const superInfo = superMap.get(varInfo.supermercado_id)
 
       const nombre = varInfo.descripcion
         ? `${prodInfo.nombre} — ${varInfo.descripcion}`
@@ -165,10 +201,10 @@ export async function GET() {
       anomalias.push({
         variante_id:     varianteId,
         nombre,
-        supermercado:    superInfo?.nombre    ?? `super_${varInfo.supermercado_id}`,
-        color:           superInfo?.color     ?? '#94A3B8',
+        supermercado:    superInfo?.nombre ?? `super_${varInfo.supermercado_id}`,
+        color:           superInfo?.color  ?? '#94A3B8',
         marca:           prodInfo.marca,
-        es_propio:       marcasPropias.includes(prodInfo.marca),
+        es_propio:       prodInfo.es_propio,
         precio_anterior: +mediaBase.toFixed(2),
         precio_actual:   +mediaRec.toFixed(2),
         cambio_pct:      cambioPct,
@@ -180,7 +216,7 @@ export async function GET() {
     // Ordenar por magnitud de cambio (descendente)
     anomalias.sort((a, b) => Math.abs(b.cambio_pct) - Math.abs(a.cambio_pct))
 
-    // Si no hay ningún precio con suficiente historial → sin_historial
+    // Si no hay suficiente historial en ninguna variante → sin_historial
     const hayHistorial = [...grupos.values()].some(g => g.baseline.length >= 3)
     if (!hayHistorial) {
       return NextResponse.json({ anomalias: [], total: 0, sin_historial: true })

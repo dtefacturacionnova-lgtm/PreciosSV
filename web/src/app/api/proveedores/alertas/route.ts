@@ -1,18 +1,16 @@
 /**
  * GET /api/proveedores/alertas
- * Detecta cuando un competidor lanza una oferta:
- *   - Ofertas activas de marcas competidoras (precios_actuales, en_oferta = true)
- *   - Para cada una, busca la primera aparición de en_oferta=true en los últimos 7 días
- *     → si <= 48 h: "nueva", <= 96 h: "reciente", else: "vigente"
+ * Detecta cuando un competidor lanza una oferta.
  *
- * Contexto histórico por marca competidora (últimos 90 días):
- *   - frecuencia_promos: frecuente (≥20 días con oferta) | moderada (5-19) | ocasional (<5)
- *   - dias_promo_ultimo_90d: días distintos con en_oferta=true
- *   - duracion_promedio_dias: duración media de ofertas anteriores (períodos cerrados)
- *   - productos_propios_afectados: cuántos productos propios compiten en la misma categoría
+ * Fuente de datos: proveedor_catalogo (productos propios) +
+ *   proveedor_competidores_catalogo (competidores del catálogo).
  *
- * NOTE: precios_actuales is a materialized view — PostgREST cannot infer FK relationships
- * from it. All joins are resolved manually to avoid silent query failures.
+ * Agrupa las alertas por marca competidora e incluye contexto histórico:
+ *   - frecuencia_promos, dias_promo_ultimo_90d, duracion_promedio_dias
+ *   - productos_propios_afectados: nº de items del catálogo que tienen a esta marca como competidor
+ *
+ * NOTE: precios_actuales is a materialized view — PostgREST cannot infer FK relationships.
+ * All joins are resolved manually.
  */
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
@@ -23,26 +21,55 @@ export async function GET() {
   try {
     const db = createServiceClient()
 
+    // ── 1. Proveedor ─────────────────────────────────────────
     const { data: pRaw } = await db
       .from('proveedores')
-      .select('id,marcas,competidores')
+      .select('id')
       .limit(1)
       .single()
     const prov = pRaw as any
     if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
 
-    const marcasPropias: string[] = prov.marcas ?? []
-    const competidores: string[]  = prov.competidores ?? []
+    // ── 2. Catálogo propio (sólo items enlazados a productos) ─
+    const { data: catalogoRaw } = await (db as any)
+      .from('proveedor_catalogo')
+      .select('id, producto_id')
+      .eq('proveedor_id', prov.id)
+      .eq('activo', true)
+      .not('producto_id', 'is', null)
 
-    if (competidores.length === 0) {
+    const catalogo    = (catalogoRaw as any[] | null) ?? []
+    const catalogoIds = catalogo.map((c: any) => c.id as number)
+
+    if (catalogoIds.length === 0) {
       return NextResponse.json({ alertas: [], total_ofertas: 0, tiene_competidores: false })
     }
 
-    // ── 1. Productos de las marcas competidoras ───────────────────
+    // ── 3. Competidores enlazados vía catálogo ────────────────
+    const { data: compLinksRaw } = await (db as any)
+      .from('proveedor_competidores_catalogo')
+      .select('id, producto_id, competidor_producto_id')
+      .in('producto_id', catalogoIds)
+      .eq('activo', true)
+      .not('competidor_producto_id', 'is', null)
+
+    const compLinks = (compLinksRaw as any[] | null) ?? []
+
+    if (compLinks.length === 0) {
+      return NextResponse.json({ alertas: [], total_ofertas: 0, tiene_competidores: false })
+    }
+
+    // ── 4. IDs únicos de productos competidores ───────────────
+    const compProdIds = [...new Set(compLinks.map((c: any) => c.competidor_producto_id as number))]
+
+    // Map: marca → Set<catalogo_item_id> (para calcular propios_afectados)
+    // (lo llenamos después de tener la info de productos)
+
+    // ── 5. Info de productos competidores ─────────────────────
     const { data: prodCompRaw } = await db
       .from('productos')
       .select('id, nombre_normalizado, marca, imagen_url, activo, categoria_id')
-      .in('marca', competidores)
+      .in('id', compProdIds)
       .eq('activo', true)
 
     const prodComp = (prodCompRaw as any[] | null) ?? []
@@ -60,13 +87,23 @@ export async function GET() {
         categoria_id: p.categoria_id ?? null,
       }])
     )
-    const compProdIds = prodComp.map((p: any) => p.id)
 
-    // ── 2. Variantes activas de esos productos ────────────────────
+    // Marca → Set de catalog_item_ids que la tienen como competidor
+    const brandAfectados = new Map<string, Set<number>>()
+    for (const link of compLinks) {
+      const prod = prodCompMap.get(link.competidor_producto_id)
+      if (!prod) continue
+      if (!brandAfectados.has(prod.marca)) brandAfectados.set(prod.marca, new Set())
+      brandAfectados.get(prod.marca)!.add(link.producto_id)
+    }
+
+    const compProdIdsFiltered = prodComp.map((p: any) => p.id as number)
+
+    // ── 6. Variantes activas de competidores ──────────────────
     const { data: varCompRaw } = await db
       .from('producto_variantes')
       .select('id, producto_id')
-      .in('producto_id', compProdIds)
+      .in('producto_id', compProdIdsFiltered)
       .eq('activo', true)
 
     const varComp = (varCompRaw as any[] | null) ?? []
@@ -77,9 +114,9 @@ export async function GET() {
     const varProdMap = new Map<number, number>(
       varComp.map((v: any) => [v.id, v.producto_id])
     )
-    const compVarIds = varComp.map((v: any) => v.id)
+    const compVarIds = varComp.map((v: any) => v.id as number)
 
-    // ── 3. Ofertas activas de esos variantes ──────────────────────
+    // ── 7. Ofertas activas ────────────────────────────────────
     const { data: ofertasRaw } = await db
       .from('precios_actuales')
       .select('variante_id, supermercado_id, precio_normal, precio_oferta, en_oferta, descuento_pct')
@@ -92,8 +129,8 @@ export async function GET() {
       return NextResponse.json({ alertas: [], total_ofertas: 0, tiene_competidores: true })
     }
 
-    // ── 4. Supermercados (para nombre y color) ────────────────────
-    const superIdsNeeded = [...new Set(filas.map((f: any) => f.supermercado_id))]
+    // ── 8. Supermercados ──────────────────────────────────────
+    const superIdsNeeded = [...new Set(filas.map((f: any) => f.supermercado_id as number))]
     const { data: superRaw } = await db
       .from('supermercados')
       .select('id, nombre, nombre_corto, color_hex')
@@ -105,7 +142,7 @@ export async function GET() {
       ])
     )
 
-    // ── 5. Categorías (para nombre legible en la alerta) ──────────
+    // ── 9. Categorías ─────────────────────────────────────────
     const catIdsNeeded = [...new Set(
       prodComp.map((p: any) => p.categoria_id).filter(Boolean)
     )]
@@ -120,8 +157,8 @@ export async function GET() {
       }
     }
 
-    // ── 6. Cuándo comenzó cada oferta ────────────────────────────
-    const varianteIds = filas.map((f: any) => f.variante_id)
+    // ── 10. Inicio de oferta (últimos 7 días) ─────────────────
+    const varianteIds = filas.map((f: any) => f.variante_id as number)
     const hace7dias   = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
     const { data: iniciosRaw } = await db
@@ -132,34 +169,12 @@ export async function GET() {
       .gte('fecha_hora', hace7dias)
       .order('fecha_hora', { ascending: true })
 
-    // Primera fecha de en_oferta=true en últimos 7d → inicio de la promo
     const inicioOferta = new Map<number, string>()
     for (const r of (iniciosRaw as any[] | null) ?? []) {
       if (!inicioOferta.has(r.variante_id)) inicioOferta.set(r.variante_id, r.fecha_hora)
     }
 
-    // ── 7. Agrupar variante_ids y categorías por marca competidora ─
-    const variantesPorMarca: Record<string, number[]>    = {}
-    const categoriasPorMarca: Record<string, Set<number>> = {}
-
-    for (const f of filas) {
-      const prodId = varProdMap.get(f.variante_id)
-      if (prodId === undefined) continue
-      const prod = prodCompMap.get(prodId)
-      if (!prod) continue
-
-      const marca = prod.marca
-      if (!variantesPorMarca[marca]) variantesPorMarca[marca] = []
-      variantesPorMarca[marca].push(f.variante_id)
-
-      const catId = prod.categoria_id
-      if (catId) {
-        if (!categoriasPorMarca[marca]) categoriasPorMarca[marca] = new Set()
-        categoriasPorMarca[marca].add(catId)
-      }
-    }
-
-    // ── 8. Historial de 90 días para variantes de marcas competidoras ─
+    // ── 11. Historial 90 días ─────────────────────────────────
     const hace90dias = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
     const { data: hist90Raw } = await db
@@ -168,11 +183,11 @@ export async function GET() {
       .in('variante_id', varianteIds)
       .gte('fecha_hora', hace90dias)
       .order('variante_id', { ascending: true })
-      .order('fecha_hora', { ascending: true })
+      .order('fecha_hora',  { ascending: true })
 
     const hist90 = (hist90Raw as any[] | null) ?? []
 
-    // ── 8a. Días distintos con en_oferta=true por variante ────────
+    // 11a. Días distintos con en_oferta=true por variante
     const diasOfertaPorVariante: Record<number, Set<string>> = {}
     for (const r of hist90) {
       if (!r.en_oferta) continue
@@ -181,7 +196,7 @@ export async function GET() {
       diasOfertaPorVariante[r.variante_id].add(dia)
     }
 
-    // ── 8b. Duración promedio de ofertas anteriores ───────────────
+    // 11b. Duración promedio de ofertas (períodos cerrados)
     const registrosPorVariante: Record<number, { fecha_hora: string; en_oferta: boolean }[]> = {}
     for (const r of hist90) {
       if (!registrosPorVariante[r.variante_id]) registrosPorVariante[r.variante_id] = []
@@ -189,14 +204,11 @@ export async function GET() {
     }
 
     const duracionesTotalPorVariante: Record<number, { totalDias: number; rachas: number }> = {}
-    const hoy = new Date()
-    hoy.setHours(0, 0, 0, 0)
-
     for (const [vidStr, registros] of Object.entries(registrosPorVariante)) {
       const vid = Number(vidStr)
       let rachaInicio: Date | null = null
       let totalDias = 0
-      let rachas = 0
+      let rachas    = 0
 
       for (const r of registros) {
         const fecha = new Date(r.fecha_hora)
@@ -209,30 +221,20 @@ export async function GET() {
           rachaInicio = null
         }
       }
-
-      if (rachas > 0) {
-        duracionesTotalPorVariante[vid] = { totalDias, rachas }
-      }
+      if (rachas > 0) duracionesTotalPorVariante[vid] = { totalDias, rachas }
     }
 
-    // ── 9. Productos propios afectados por categoría ──────────────
-    let productosPropiosPorCategoria: Record<number, number> = {}
-
-    if (marcasPropias.length > 0) {
-      const { data: propiosRaw } = await db
-        .from('productos')
-        .select('categoria_id')
-        .in('marca', marcasPropias)
-        .eq('activo', true)
-        .not('categoria_id', 'is', null)
-
-      for (const p of (propiosRaw as any[] | null) ?? []) {
-        const cid: number = p.categoria_id
-        productosPropiosPorCategoria[cid] = (productosPropiosPorCategoria[cid] ?? 0) + 1
-      }
+    // ── 12. Marcas competidoras únicas (de los productos en oferta) ─
+    const variantesPorMarca: Record<string, number[]> = {}
+    for (const f of filas) {
+      const prodId = varProdMap.get(f.variante_id)
+      if (prodId === undefined) continue
+      const prod = prodCompMap.get(prodId)
+      if (!prod) continue
+      if (!variantesPorMarca[prod.marca]) variantesPorMarca[prod.marca] = []
+      variantesPorMarca[prod.marca].push(f.variante_id)
     }
 
-    // ── 10. Calcular métricas históricas por marca ─────────────────
     type MetricasMarca = {
       frecuencia_promos:           'frecuente' | 'moderada' | 'ocasional'
       dias_promo_ultimo_90d:       number
@@ -240,11 +242,11 @@ export async function GET() {
       productos_propios_afectados: number
     }
 
+    const competidoresBrands = [...new Set(prodComp.map((p: any) => p.marca as string))]
     const metricasPorMarca: Record<string, MetricasMarca> = {}
 
-    for (const marca of competidores) {
+    for (const marca of competidoresBrands) {
       const vids = variantesPorMarca[marca] ?? []
-      if (vids.length === 0) continue
 
       const diasUnion = new Set<string>()
       for (const vid of vids) {
@@ -258,27 +260,22 @@ export async function GET() {
         'ocasional'
 
       let totalDiasRachas = 0
-      let totalRachas = 0
+      let totalRachas     = 0
       for (const vid of vids) {
         const d = duracionesTotalPorVariante[vid]
         if (d) { totalDiasRachas += d.totalDias; totalRachas += d.rachas }
       }
       const duracionPromedio = totalRachas > 0 ? Math.round(totalDiasRachas / totalRachas) : null
 
-      let afectados = 0
-      for (const catId of categoriasPorMarca[marca] ?? []) {
-        afectados += productosPropiosPorCategoria[catId] ?? 0
-      }
-
       metricasPorMarca[marca] = {
-        frecuencia_promos:          frecuencia,
-        dias_promo_ultimo_90d:      diasPromo,
-        duracion_promedio_dias:     duracionPromedio,
-        productos_propios_afectados: afectados,
+        frecuencia_promos:           frecuencia,
+        dias_promo_ultimo_90d:       diasPromo,
+        duracion_promedio_dias:      duracionPromedio,
+        productos_propios_afectados: brandAfectados.get(marca)?.size ?? 0,
       }
     }
 
-    // ── 11. Agrupar por marca, calcular antigüedad ─────────────────
+    // ── 13. Agrupar por marca competidora ─────────────────────
     type Alerta = {
       marca:                       string
       total:                       number
@@ -312,8 +309,8 @@ export async function GET() {
       const prod = prodCompMap.get(prodId)
       if (!prod) continue
 
-      const marca = prod.marca
-      const super_ = superMap.get(f.supermercado_id)
+      const marca   = prod.marca
+      const super_  = superMap.get(f.supermercado_id)
       const catNombre = prod.categoria_id ? catNombreMap.get(prod.categoria_id) ?? null : null
 
       if (!porMarca[marca]) {

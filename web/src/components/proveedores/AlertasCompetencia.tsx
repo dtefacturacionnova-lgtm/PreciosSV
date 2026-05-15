@@ -224,12 +224,7 @@ function GrupoMarca({ alerta }: { alerta: AlertaMarca }) {
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 
-interface Props {
-  /** true cuando el proveedor no tiene competidores configurados aún */
-  sinCompetidores?: boolean
-}
-
-export default function AlertasCompetencia({ sinCompetidores }: Props) {
+export default function AlertasCompetencia() {
   const [data,           setData]           = useState<AlertasData | null>(null)
   const [cargando,       setCargando]       = useState(true)
   const [error,          setError]          = useState<string | null>(null)
@@ -275,7 +270,7 @@ export default function AlertasCompetencia({ sinCompetidores }: Props) {
   }, [cargar])
 
   // ── Sin competidores configurados ─────────────────────────────
-  if (sinCompetidores || data?.tiene_competidores === false) {
+  if (data?.tiene_competidores === false) {
     return (
       <div className="bg-slate-50 border border-slate-200 rounded-2xl p-8 text-center">
         <Settings className="w-10 h-10 text-slate-300 mx-auto mb-3" />

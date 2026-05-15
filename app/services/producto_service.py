@@ -113,6 +113,11 @@ class ProductoService:
             variante_id = variante.id if variante else None
 
         if variante_id is not None:
+            # F2.5: si el scraper ahora trae EAN y el producto aún no lo tiene,
+            # persistirlo para que el trigger DB active el auto-linking con
+            # proveedor_catalogo y proveedor_competidores_catalogo.
+            if raw.get("ean"):
+                await self._backfill_ean(variante_id, raw["ean"])
             await self._guardar_precio(variante_id, raw)
             return "actualizado"
 
@@ -167,13 +172,17 @@ class ProductoService:
         """Crea un producto normalizado nuevo en la BD."""
         cat_id = await self._get_categoria_id(raw.get("categoria_nombre"))
 
+        # Normalizar EAN: solo dígitos (EAN-13/UPC-12 no llevan guiones)
+        ean_raw = raw.get("ean")
+        ean = "".join(c for c in ean_raw if c.isdigit()) if ean_raw else None
+
         producto = Producto(
             nombre_normalizado=raw["nombre_local"],
             marca=raw.get("marca"),
             categoria_id=cat_id,
             descripcion=raw.get("descripcion"),
             imagen_url=raw.get("imagen_url"),
-            ean=raw.get("ean"),
+            ean=ean,
             unidad=self._inferir_unidad(raw["nombre_local"]),
             cantidad=self._inferir_cantidad(raw["nombre_local"]),
         )
@@ -213,6 +222,40 @@ class ProductoService:
         )
         self.db.add(precio)
 
+    # ── EAN backfill ────────────────────────────────────────
+    async def _backfill_ean(self, variante_id: int, ean: str) -> None:
+        """
+        Si el producto asociado a esta variante no tiene EAN guardado,
+        lo persiste ahora. Esto activa el trigger DB trg_sync_productos_ean
+        que auto-linkea con proveedor_catalogo / proveedor_competidores_catalogo.
+
+        Solo hace UPDATE cuando ean IS NULL para evitar sobreescribir datos correctos.
+        """
+        ean_norm = "".join(c for c in ean if c.isdigit()) if ean else None
+        if not ean_norm:
+            return
+
+        try:
+            result = await self.db.execute(
+                select(ProductoVariante).where(ProductoVariante.id == variante_id)
+            )
+            variante = result.scalar_one_or_none()
+            if not variante:
+                return
+
+            prod_result = await self.db.execute(
+                select(Producto).where(
+                    and_(Producto.id == variante.producto_id, Producto.ean.is_(None))
+                )
+            )
+            producto = prod_result.scalar_one_or_none()
+            if producto:
+                producto.ean = ean_norm
+                logger.debug("EAN actualizado en producto existente",
+                             producto_id=producto.id, ean=ean_norm)
+        except Exception as e:
+            logger.warning("Error en backfill EAN", variante_id=variante_id, error=str(e))
+
     # ── Helpers de BD ────────────────────────────────────────
     async def _buscar_variante(
         self, supermercado_id: int, sku_local: str
@@ -228,10 +271,22 @@ class ProductoService:
         return result.scalar_one_or_none()
 
     async def _buscar_por_ean(self, ean: str) -> Optional[Producto]:
+        """
+        Busca producto por EAN exacto.
+        Normaliza el EAN (solo dígitos) para tolerar formatos como "770-2076-522023".
+        """
+        ean_norm = "".join(c for c in ean if c.isdigit())
         result = await self.db.execute(
-            select(Producto).where(Producto.ean == ean)
+            select(Producto).where(Producto.ean == ean_norm)
         )
-        return result.scalar_one_or_none()
+        producto = result.scalar_one_or_none()
+        if not producto and ean_norm != ean:
+            # También buscar con el EAN original por si fue guardado sin normalizar
+            result2 = await self.db.execute(
+                select(Producto).where(Producto.ean == ean)
+            )
+            producto = result2.scalar_one_or_none()
+        return producto
 
     async def _buscar_candidatos(
         self, nombre: str, marca: Optional[str]

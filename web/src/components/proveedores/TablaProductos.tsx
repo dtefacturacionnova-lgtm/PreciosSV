@@ -18,10 +18,14 @@ interface PrecioPorTienda {
 
 interface ProductoRow {
   id:               number
+  producto_id:      number | null
+  enlazado:         boolean
   nombre:           string
   marca:            string | null
   imagen_url:       string | null
   categoria:        string | null
+  subcategoria:     string | null
+  pvp_sugerido:     number | null
   precio_min:       number | null
   en_oferta:        boolean
   descuento_max:    number | null
@@ -99,13 +103,17 @@ function FilaProducto({ prod }: { prod: ProductoRow }) {
         {/* Expandir */}
         <td className="py-3 px-4 text-right">
           <div className="flex items-center justify-end gap-2">
-            <Link
-              href={`/producto/${prod.id}`}
-              onClick={e => e.stopPropagation()}
-              className="text-blue-600 hover:text-blue-800"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-            </Link>
+            {prod.producto_id ? (
+              <Link
+                href={`/producto/${prod.producto_id}`}
+                onClick={e => e.stopPropagation()}
+                className="text-blue-600 hover:text-blue-800"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+              </Link>
+            ) : (
+              <span className="text-[10px] text-slate-300 font-medium">sin enlace</span>
+            )}
             {expandido ? (
               <ChevronUp className="w-4 h-4 text-slate-400" />
             ) : (
@@ -160,7 +168,7 @@ export default function TablaProductos({ productos }: Props) {
     return (
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8 text-center">
         <Package className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-        <p className="text-slate-500 text-sm">No se encontraron productos para tus marcas registradas.</p>
+        <p className="text-slate-500 text-sm">No hay productos en tu catálogo aún. Agrégalos en Mi Catálogo.</p>
       </div>
     )
   }
