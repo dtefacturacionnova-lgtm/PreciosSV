@@ -26,13 +26,14 @@ export async function GET() {
     const prov = pRaw as any
     if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
 
-    // ── 2. Catálogo propio con PVP sugerido y EAN enlazado ───────
+    // ── 2. Catálogo propio completo ───────────────────────────────
+    // Se muestran TODOS los productos del catálogo (con y sin PVP).
+    // Los sin PVP aparecen con el botón "+ Agregar PVP" en el componente.
     const { data: catalogoRaw } = await (db as any)
       .from('proveedor_catalogo')
       .select('id, nombre, marca, presentacion, gramaje, unidad, pvp_sugerido, producto_id, imagen_url')
       .eq('proveedor_id', prov.id)
       .eq('activo', true)
-      .not('pvp_sugerido', 'is', null)
       .order('nombre')
 
     const catalogo = (catalogoRaw as any[] | null) ?? []
@@ -42,7 +43,7 @@ export async function GET() {
         productos: [],
         resumen_global: { total_ok: 0, total_alto: 0, total_bajo: 0, total_sin_datos: 0 },
         sin_datos: true,
-        mensaje: 'Agrega productos con PVP sugerido en "Mi Catálogo" para activar el monitoreo.',
+        mensaje: 'Agrega productos en "Mi Catálogo" para activar el monitoreo.',
       })
     }
 
@@ -117,6 +118,36 @@ export async function GET() {
         c.presentacion,
         c.gramaje ? `${c.gramaje}${c.unidad ?? ''}` : null,
       ].filter(Boolean).join(' ')
+
+      if (pvp === null) {
+        // Sin PVP registrado: no se puede monitorear, se muestra con CTA para añadir PVP
+        return {
+          catalogo_id:  c.id,
+          nombre:       c.nombre,
+          marca:        c.marca,
+          descripcion,
+          imagen_url:   c.imagen_url,
+          pvp_sugerido: null,
+          enlazado:     !!c.producto_id,
+          tiendas:      precios.length > 0 ? precios.map((p: any) => {
+            const s = p.supermercados as any
+            const precioEfectivo = +(p.precio_oferta ?? p.precio_normal)
+            return {
+              supermercado:    s?.nombre    ?? '—',
+              key:             s?.nombre_corto ?? '',
+              color:           s?.color_hex   ?? '#94a3b8',
+              precio_normal:   +p.precio_normal,
+              precio_oferta:   p.precio_oferta != null ? +p.precio_oferta : null,
+              en_oferta:       p.en_oferta,
+              precio_efectivo: precioEfectivo,
+              pvp_sugerido:    null,
+              desviacion_pct:  null,
+              estado:          'sin_datos' as const,
+            }
+          }) : [],
+          resumen: { ok: 0, alto: 0, bajo: 0, sin_datos: Math.max(precios.length, 1) },
+        }
+      }
 
       if (precios.length === 0) {
         total_sin_datos++
