@@ -77,7 +77,11 @@ function LoginForm() {
             <span className="text-[#059669]">SV</span>
           </span>
         </Link>
-        <p className="text-slate-500 text-sm mt-1">Accede a tu cuenta</p>
+        <p className="text-slate-500 text-sm mt-1">
+          {next.startsWith('/proveedores')
+            ? 'Accede al Panel de Proveedor'
+            : 'Accede a tu cuenta'}
+        </p>
       </div>
 
       {/* Selector de modo */}

@@ -30,12 +30,12 @@ export default function SeccionB2B() {
               gestiona ofertas y analiza tendencias del mercado salvadoreño.
             </p>
             <Link
-              href="/proveedores/registro"
+              href="/proveedores/dashboard"
               className="inline-flex items-center gap-2 px-6 py-3 rounded-full
                          bg-[#059669] text-white font-semibold hover:bg-emerald-500
                          transition-colors text-base shadow-lg shadow-emerald-900/30"
             >
-              Comenzar gratis
+              Acceder al panel
               <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
