@@ -7,14 +7,28 @@
  *   b) Distribución: SKUs por encima / en rango (±5%) / por debajo del mercado
  *   c) Por cadena: índice de precio propio vs. mercado en cada supermercado
  *   d) Top 5 gaps: productos con mayor diferencia de precio vs. competencia
+ *
+ * NOTE: precios_actuales is a materialized view — PostgREST cannot infer FK relationships
+ * from it. All joins are resolved manually to avoid silent query failures.
+ *
+ * Grouping strategy: productos are matched by (categoria_id × supermercado_id).
+ * Own-brand prices are compared against competitor prices in the SAME category and
+ * supermarket. Products with no competitor pricing in their category are skipped.
  */
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-// Colores para cada supermercado (fallback si la BD no trae color)
-const COLOR_FALLBACK = '#64748B'
+const SIN_DATOS_RESP = {
+  indice_global:        0,
+  productos_por_encima: 0,
+  productos_en_rango:   0,
+  productos_por_debajo: 0,
+  por_cadena:           [],
+  top_gaps:             [],
+  sin_datos:            true,
+}
 
 export async function GET() {
   try {
@@ -31,150 +45,148 @@ export async function GET() {
     const marcasPropias: string[] = prov.marcas ?? []
     const competidores:  string[] = prov.competidores ?? []
 
-    // Sin marcas propias o sin competidores → sin datos suficientes
     if (marcasPropias.length === 0 || competidores.length === 0) {
-      return NextResponse.json({
-        indice_global:        0,
-        productos_por_encima: 0,
-        productos_en_rango:   0,
-        productos_por_debajo: 0,
-        por_cadena:           [],
-        top_gaps:             [],
-        sin_datos:            true,
-      })
+      return NextResponse.json(SIN_DATOS_RESP)
     }
 
     const todasLasMarcas = [...new Set([...marcasPropias, ...competidores])]
 
-    // ── Precios actuales de todas las marcas relevantes ────────────
-    const { data: rawPrecios, error: preciosErr } = await db
+    // ── 1. Productos de todas las marcas relevantes ───────────────
+    const { data: prodRaw } = await db
+      .from('productos')
+      .select('id, nombre_normalizado, marca, imagen_url, categoria_id')
+      .in('marca', todasLasMarcas)
+      .eq('activo', true)
+
+    const productos = (prodRaw as any[] | null) ?? []
+    if (productos.length === 0) return NextResponse.json(SIN_DATOS_RESP)
+
+    const prodInfoMap = new Map<number, {
+      nombre: string; marca: string; imagen_url: string | null; categoria_id: number | null; es_propio: boolean
+    }>(
+      productos.map((p: any) => [p.id, {
+        nombre:       p.nombre_normalizado,
+        marca:        p.marca,
+        imagen_url:   p.imagen_url ?? null,
+        categoria_id: p.categoria_id ?? null,
+        es_propio:    marcasPropias.includes(p.marca),
+      }])
+    )
+    const allProdIds = productos.map((p: any) => p.id)
+
+    // ── 2. Variantes activas ──────────────────────────────────────
+    const { data: varRaw } = await db
+      .from('producto_variantes')
+      .select('id, producto_id')
+      .in('producto_id', allProdIds)
+      .eq('activo', true)
+
+    const variantes  = (varRaw as any[] | null) ?? []
+    const varProdMap = new Map<number, number>(
+      variantes.map((v: any) => [v.id, v.producto_id])
+    )
+    const allVarIds  = variantes.map((v: any) => v.id)
+    if (allVarIds.length === 0) return NextResponse.json(SIN_DATOS_RESP)
+
+    // ── 3. Precios actuales (raw) ─────────────────────────────────
+    const { data: preciosRaw } = await db
       .from('precios_actuales')
-      .select(`
-        producto_id,
-        precio_normal,
-        precio_oferta,
-        disponible,
-        supermercados!inner(nombre, nombre_corto, color_hex),
-        producto_variantes!inner(producto_id, activo),
-        productos!inner(id, nombre_normalizado, marca, activo, imagen_url)
-      `)
-      .in('productos.marca', todasLasMarcas)
-      .eq('productos.activo', true)
-      .eq('producto_variantes.activo', true)
+      .select('variante_id, supermercado_id, precio_normal, precio_oferta')
+      .in('variante_id', allVarIds)
 
-    if (preciosErr) console.error('[proveedores/analiticas] rawPrecios query:', preciosErr)
-    const filas = (rawPrecios as any[] | null) ?? []
+    const preciosData = (preciosRaw as any[] | null) ?? []
+    if (preciosData.length === 0) return NextResponse.json(SIN_DATOS_RESP)
 
-    if (filas.length === 0) {
-      return NextResponse.json({
-        indice_global:        0,
-        productos_por_encima: 0,
-        productos_en_rango:   0,
-        productos_por_debajo: 0,
-        por_cadena:           [],
-        top_gaps:             [],
-        sin_datos:            true,
-      })
+    // ── 4. Supermercados (para nombre y color en la respuesta) ────
+    const superIdsNeeded = [...new Set(preciosData.map((p: any) => p.supermercado_id))]
+    const superMap = new Map<number, { key: string; nombre: string; color: string }>()
+
+    if (superIdsNeeded.length > 0) {
+      const { data: superRaw } = await db
+        .from('supermercados')
+        .select('id, nombre, nombre_corto, color_hex')
+        .in('id', superIdsNeeded)
+
+      for (const s of (superRaw as any[] | null) ?? []) {
+        superMap.set(s.id, { key: s.nombre_corto, nombre: s.nombre, color: s.color_hex })
+      }
     }
 
-    // ── Estructuras de agregación ──────────────────────────────────
-
-    // ── a) Precio promedio de mercado (sólo competidores) y propio
-    //        por (nombre_normalizado × cadena) ──────────────────────
-    type GrupoProducto = {
-      nombre:       string
-      imagen_url:   string | null
-      superKey:     string
-      propios:      number[]   // precios de mis marcas
-      competidores: number[]   // precios de marcas competidoras (excluyendo las propias)
+    // ── 5. Agrupar por (categoria_id × supermercado_id) ──────────
+    //   Precios propios vs. competidores separados
+    type GrupoCategoria = {
+      propios:       { nombre: string; imagen_url: string | null; precio: number }[]
+      competidores:  number[]
     }
+    // clave: `${catId}::${superId}`
+    const grupos = new Map<string, GrupoCategoria>()
 
-    const grupos = new Map<string, GrupoProducto>()
+    for (const f of preciosData) {
+      const prodId = varProdMap.get(f.variante_id)
+      if (prodId === undefined) continue
+      const prod = prodInfoMap.get(prodId)
+      if (!prod || prod.categoria_id === null) continue
 
-    for (const f of filas) {
-      const marca: string = f.productos?.marca
-      if (!marca) continue
-      const superKey: string = f.supermercados?.nombre_corto
-      if (!superKey) continue
+      const clave  = `${prod.categoria_id}::${f.supermercado_id}`
+      const precio = (f.precio_oferta ?? f.precio_normal) as number
 
-      const esPropioFila   = marcasPropias.includes(marca)
-      const precioEfectivo = (f.precio_oferta ?? f.precio_normal) as number
-      const nombre         = (f.productos?.nombre_normalizado ?? '') as string
-
-      const clave = `${nombre}::${superKey}`
       if (!grupos.has(clave)) {
-        grupos.set(clave, {
-          nombre,
-          imagen_url:   f.productos?.imagen_url ?? null,
-          superKey,
-          propios:      [],
-          competidores: [],
-        })
+        grupos.set(clave, { propios: [], competidores: [] })
       }
       const g = grupos.get(clave)!
-      if (esPropioFila) g.propios.push(precioEfectivo)
-      else              g.competidores.push(precioEfectivo)
+
+      if (prod.es_propio) {
+        g.propios.push({ nombre: prod.nombre, imagen_url: prod.imagen_url, precio })
+      } else {
+        g.competidores.push(precio)
+      }
     }
 
-    // ── b) Calcular índice por SKU × cadena ───────────────────────
+    // ── 6. Calcular índice por (categoría × cadena) ───────────────
     type SKUIndice = {
       nombre:         string
       imagen_url:     string | null
-      superKey:       string
+      superId:        number
       precio_propio:  number
       precio_mercado: number
-      diferencia_pct: number     // (propio/mercado - 1)*100
+      diferencia_pct: number
     }
     const skuIndices: SKUIndice[] = []
 
-    for (const g of grupos.values()) {
-      if (g.propios.length === 0)      continue  // no tenemos precio propio aquí
-      if (g.competidores.length === 0) continue  // sin competidores en este super → no comparar
+    for (const [clave, g] of grupos) {
+      if (g.propios.length === 0 || g.competidores.length === 0) continue
 
-      const precioPropio   = g.propios.reduce((a, b) => a + b, 0) / g.propios.length
-      // Precio mercado = sólo competidores (excluye las propias marcas)
-      const precioMercado  = g.competidores.reduce((a, b) => a + b, 0) / g.competidores.length
-      const diferencia_pct = +((precioPropio / precioMercado - 1) * 100).toFixed(2)
+      const superId = Number(clave.split('::')[1])
+      const precioMercado = g.competidores.reduce((a, b) => a + b, 0) / g.competidores.length
 
-      skuIndices.push({
-        nombre:        g.nombre,
-        imagen_url:    g.imagen_url,
-        superKey:      g.superKey,
-        precio_propio: +precioPropio.toFixed(2),
-        precio_mercado: +precioMercado.toFixed(2),
-        diferencia_pct,
-      })
+      for (const p of g.propios) {
+        const diferencia_pct = +((p.precio / precioMercado - 1) * 100).toFixed(2)
+        skuIndices.push({
+          nombre:         p.nombre,
+          imagen_url:     p.imagen_url,
+          superId,
+          precio_propio:  +p.precio.toFixed(2),
+          precio_mercado: +precioMercado.toFixed(2),
+          diferencia_pct,
+        })
+      }
     }
 
-    if (skuIndices.length === 0) {
-      return NextResponse.json({
-        indice_global:        0,
-        productos_por_encima: 0,
-        productos_en_rango:   0,
-        productos_por_debajo: 0,
-        por_cadena:           [],
-        top_gaps:             [],
-        sin_datos:            true,
-      })
-    }
+    if (skuIndices.length === 0) return NextResponse.json(SIN_DATOS_RESP)
 
-    // ── c) Índice global ──────────────────────────────────────────
+    // ── 7. Índice global ──────────────────────────────────────────
     const indice_global = +(
       skuIndices.reduce((s, x) => s + x.diferencia_pct, 0) / skuIndices.length
     ).toFixed(2)
 
-    // ── d) Distribución ───────────────────────────────────────────
-    // Deduplicar por nombre (colapsar cadenas para dar una vista de SKU global)
+    // ── 8. Distribución por nombre (colapsar cadenas) ─────────────
     const skuPorNombre = new Map<string, number[]>()
     for (const s of skuIndices) {
       if (!skuPorNombre.has(s.nombre)) skuPorNombre.set(s.nombre, [])
       skuPorNombre.get(s.nombre)!.push(s.diferencia_pct)
     }
 
-    let productos_por_encima = 0
-    let productos_en_rango   = 0
-    let productos_por_debajo = 0
-
+    let productos_por_encima = 0, productos_en_rango = 0, productos_por_debajo = 0
     for (const indices of skuPorNombre.values()) {
       const avg = indices.reduce((a, b) => a + b, 0) / indices.length
       if (avg > 5)       productos_por_encima++
@@ -182,45 +194,32 @@ export async function GET() {
       else               productos_en_rango++
     }
 
-    // ── e) Por cadena ─────────────────────────────────────────────
-    // Agrupar skuIndices por superKey
-    const porSuperMap = new Map<string, { propios: number[]; mercado: number[]; color: string; nombre: string }>()
-
-    for (const f of filas) {
-      const superKey: string = f.supermercados?.nombre_corto
-      const superNombre: string = f.supermercados?.nombre ?? superKey
-      const color: string = f.supermercados?.color_hex ?? COLOR_FALLBACK
-      if (!superKey) continue
-      if (!porSuperMap.has(superKey)) {
-        porSuperMap.set(superKey, { propios: [], mercado: [], color, nombre: superNombre })
-      }
-    }
-
+    // ── 9. Por cadena ─────────────────────────────────────────────
+    const porSuperMap = new Map<number, { propios: number[]; mercado: number[] }>()
     for (const s of skuIndices) {
-      const entry = porSuperMap.get(s.superKey)
-      if (!entry) continue
+      if (!porSuperMap.has(s.superId)) porSuperMap.set(s.superId, { propios: [], mercado: [] })
+      const entry = porSuperMap.get(s.superId)!
       entry.propios.push(s.precio_propio)
       entry.mercado.push(s.precio_mercado)
     }
 
     const por_cadena = Array.from(porSuperMap.entries())
-      .filter(([, v]) => v.propios.length > 0)
-      .map(([superKey, v]) => {
+      .map(([superId, v]) => {
+        const super_ = superMap.get(superId)
         const prom_propio  = v.propios.reduce((a, b) => a + b, 0) / v.propios.length
         const prom_mercado = v.mercado.reduce((a, b) => a + b, 0) / v.mercado.length
         const indice       = +((prom_propio / prom_mercado - 1) * 100).toFixed(2)
         return {
-          supermercado:              v.nombre || superKey,
-          color:                     v.color,
-          precio_promedio_propio:    +prom_propio.toFixed(2),
-          precio_promedio_mercado:   +prom_mercado.toFixed(2),
+          supermercado:            super_?.nombre ?? `super_${superId}`,
+          color:                   super_?.color  ?? '#64748B',
+          precio_promedio_propio:  +prom_propio.toFixed(2),
+          precio_promedio_mercado: +prom_mercado.toFixed(2),
           indice,
         }
       })
-      .sort((a, b) => b.indice - a.indice)   // más caro primero
+      .sort((a, b) => b.indice - a.indice)
 
-    // ── f) Top 5 gaps (mayor brecha absoluta) ─────────────────────
-    // Colapsar por nombre → mayor diferencia_pct absoluta
+    // ── 10. Top 5 gaps ────────────────────────────────────────────
     const gapPorNombre = new Map<string, SKUIndice>()
     for (const s of skuIndices) {
       const prev = gapPorNombre.get(s.nombre)

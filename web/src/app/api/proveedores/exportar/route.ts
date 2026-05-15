@@ -77,26 +77,52 @@ async function exportarCumplimiento(prov: any, db: any): Promise<string> {
   if (catalogo.length === 0) return encabezado
 
   // ── 2. Precios actuales para productos enlazados ─────────────
+  // Manual joins — precios_actuales is a materialized view; PostgREST cannot infer FKs.
   const productoIds = catalogo
     .filter((c: any) => c.producto_id != null)
     .map((c: any) => c.producto_id as number)
 
-  const preciosPorProducto = new Map<number, any[]>()
+  // preciosPorProducto: producto_id → [{ supNombre, precio_normal, precio_oferta }]
+  type FilaPrecios = { supNombre: string; precio_normal: number; precio_oferta: number | null }
+  const preciosPorProducto = new Map<number, FilaPrecios[]>()
 
   if (productoIds.length > 0) {
-    const { data: prodRaw } = await db
-      .from('productos')
-      .select(`
-        id,
-        precios_actuales(
-          precio_normal, precio_oferta, en_oferta,
-          supermercados(nombre)
-        )
-      `)
-      .in('id', productoIds)
+    const { data: varRaw } = await db
+      .from('producto_variantes')
+      .select('id, producto_id')
+      .in('producto_id', productoIds)
+      .eq('activo', true)
 
-    for (const prod of (prodRaw as any[] | null) ?? []) {
-      preciosPorProducto.set(prod.id, prod.precios_actuales ?? [])
+    const variantes  = (varRaw as any[] | null) ?? []
+    const varProdMap = new Map<number, number>(variantes.map((v: any) => [v.id, v.producto_id]))
+    const varIds     = variantes.map((v: any) => v.id)
+
+    if (varIds.length > 0) {
+      const { data: paRaw } = await db
+        .from('precios_actuales')
+        .select('variante_id, supermercado_id, precio_normal, precio_oferta')
+        .in('variante_id', varIds)
+
+      const paData   = (paRaw as any[] | null) ?? []
+      const superIds = [...new Set(paData.map((p: any) => p.supermercado_id))]
+      const superNombreMap = new Map<number, string>()
+
+      if (superIds.length > 0) {
+        const { data: superRaw } = await db
+          .from('supermercados').select('id, nombre').in('id', superIds)
+        for (const s of (superRaw as any[] | null) ?? []) superNombreMap.set(s.id, s.nombre)
+      }
+
+      for (const pa of paData) {
+        const prodId = varProdMap.get(pa.variante_id)
+        if (prodId === undefined) continue
+        if (!preciosPorProducto.has(prodId)) preciosPorProducto.set(prodId, [])
+        preciosPorProducto.get(prodId)!.push({
+          supNombre:     superNombreMap.get(pa.supermercado_id) ?? '—',
+          precio_normal: +pa.precio_normal,
+          precio_oferta: pa.precio_oferta != null ? +pa.precio_oferta : null,
+        })
+      }
     }
   }
 
@@ -104,8 +130,8 @@ async function exportarCumplimiento(prov: any, db: any): Promise<string> {
   const filas: string[] = [encabezado]
 
   for (const c of catalogo) {
-    const pvp    = c.pvp_sugerido != null ? +c.pvp_sugerido : null
-    const precios: any[] = preciosPorProducto.get(c.producto_id) ?? []
+    const pvp      = c.pvp_sugerido != null ? +c.pvp_sugerido : null
+    const precios  = preciosPorProducto.get(c.producto_id) ?? []
     const enlazado = !!c.producto_id
 
     if (precios.length === 0) {
@@ -120,7 +146,6 @@ async function exportarCumplimiento(prov: any, db: any): Promise<string> {
     }
 
     for (const p of precios) {
-      const s = p.supermercados as any
       const precioEfectivo = +(p.precio_oferta ?? p.precio_normal)
       let desviacion_pct: number | null = null
       let estado = 'sin_datos'
@@ -133,7 +158,7 @@ async function exportarCumplimiento(prov: any, db: any): Promise<string> {
       filas.push(filaCSV([
         c.nombre, c.marca,
         pvp != null ? pvp.toFixed(2) : '',
-        s?.nombre ?? '—',
+        p.supNombre,
         precioEfectivo.toFixed(2),
         desviacion_pct !== null ? desviacion_pct.toFixed(1) : '',
         estado,
@@ -236,23 +261,53 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
 
   if (competidores.length === 0) return encabezado
 
+  // Manual joins — precios_actuales is a materialized view; PostgREST cannot infer FKs
+  const { data: prodRaw } = await db
+    .from('productos')
+    .select('id, nombre_normalizado, marca')
+    .in('marca', competidores)
+    .eq('activo', true)
+
+  const prodComp   = (prodRaw as any[] | null) ?? []
+  if (prodComp.length === 0) return encabezado
+
+  const prodInfoMap = new Map<number, { nombre: string; marca: string }>(
+    prodComp.map((p: any) => [p.id, { nombre: p.nombre_normalizado, marca: p.marca }])
+  )
+  const compProdIds = prodComp.map((p: any) => p.id)
+
+  const { data: varRaw } = await db
+    .from('producto_variantes')
+    .select('id, producto_id')
+    .in('producto_id', compProdIds)
+    .eq('activo', true)
+
+  const varComp    = (varRaw as any[] | null) ?? []
+  const varProdMap = new Map<number, number>(varComp.map((v: any) => [v.id, v.producto_id]))
+  const compVarIds = varComp.map((v: any) => v.id)
+  if (compVarIds.length === 0) return encabezado
+
   const { data: ofertasRaw } = await db
     .from('precios_actuales')
-    .select(`
-      variante_id,
-      precio_normal, precio_oferta, en_oferta, descuento_pct,
-      supermercados!inner(nombre),
-      producto_variantes!inner(producto_id, activo),
-      productos!inner(nombre_normalizado, marca, activo)
-    `)
-    .in('productos.marca', competidores)
+    .select('variante_id, supermercado_id, precio_normal, precio_oferta, descuento_pct')
+    .in('variante_id', compVarIds)
     .eq('en_oferta', true)
-    .eq('productos.activo', true)
-    .eq('producto_variantes.activo', true)
     .order('descuento_pct', { ascending: false })
 
   const filas_raw = (ofertasRaw as any[] | null) ?? []
   if (filas_raw.length === 0) return encabezado
+
+  const superIdsNeeded = [...new Set(filas_raw.map((f: any) => f.supermercado_id))]
+  const superMap = new Map<number, string>()
+  if (superIdsNeeded.length > 0) {
+    const { data: superRaw } = await db
+      .from('supermercados')
+      .select('id, nombre')
+      .in('id', superIdsNeeded)
+    for (const s of (superRaw as any[] | null) ?? []) {
+      superMap.set(s.id, s.nombre)
+    }
+  }
 
   const varianteIds = filas_raw.map((f: any) => f.variante_id)
   const hace7dias   = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
@@ -273,7 +328,10 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
   const filas: string[] = [encabezado]
 
   for (const f of filas_raw) {
-    const inicio      = inicioOferta.get(f.variante_id) ?? null
+    const prodId  = varProdMap.get(f.variante_id)
+    const prod    = prodId !== undefined ? prodInfoMap.get(prodId) : undefined
+    const super_  = superMap.get(f.supermercado_id) ?? '—'
+    const inicio  = inicioOferta.get(f.variante_id) ?? null
     const horasActiva = inicio
       ? Math.round((Date.now() - new Date(inicio).getTime()) / 3_600_000)
       : null
@@ -284,9 +342,9 @@ async function exportarAlertas(prov: any, db: any): Promise<string> {
       'vigente'
 
     filas.push(filaCSV([
-      f.productos?.marca ?? '—',
-      f.productos?.nombre_normalizado ?? '—',
-      f.supermercados?.nombre ?? '—',
+      prod?.marca  ?? '—',
+      prod?.nombre ?? '—',
+      super_,
       (+f.precio_normal).toFixed(2),
       f.precio_oferta != null ? (+f.precio_oferta).toFixed(2) : '',
       f.descuento_pct != null ? (+f.descuento_pct).toFixed(1) : '',

@@ -46,27 +46,63 @@ export async function GET() {
       })
     }
 
-    // ── 3. IDs de productos enlazados en el sistema de precios ───
-    const enlazados = catalogo.filter((c: any) => c.producto_id != null)
+    // ── 3. Precios actuales para productos enlazados ──────────────
+    // Manual joins — precios_actuales is a materialized view; PostgREST cannot infer FKs.
+    const enlazados   = catalogo.filter((c: any) => c.producto_id != null)
     const productoIds = enlazados.map((c: any) => c.producto_id as number)
 
-    // Precios actuales por supermercado (solo para productos enlazados)
+    // preciosPorProducto: producto_id → array of { supermercados, precio_normal, ... }
     let preciosPorProducto: Map<number, any[]> = new Map()
 
     if (productoIds.length > 0) {
-      const { data: prodRaw } = await (db as any)
-        .from('productos')
-        .select(`
-          id,
-          precios_actuales(
-            precio_normal, precio_oferta, en_oferta, descuento_pct, disponible,
-            supermercados(nombre, nombre_corto, color_hex)
-          )
-        `)
-        .in('id', productoIds)
+      // 3a. Variantes activas para esos productos
+      const { data: varRaw } = await (db as any)
+        .from('producto_variantes')
+        .select('id, producto_id')
+        .in('producto_id', productoIds)
+        .eq('activo', true)
 
-      for (const prod of (prodRaw as any[] | null) ?? []) {
-        preciosPorProducto.set(prod.id, prod.precios_actuales ?? [])
+      const variantes  = (varRaw as any[] | null) ?? []
+      const varProdMap = new Map<number, number>(variantes.map((v: any) => [v.id, v.producto_id]))
+      const varIds     = variantes.map((v: any) => v.id)
+
+      if (varIds.length > 0) {
+        // 3b. Precios actuales (raw columns only)
+        const { data: paRaw } = await (db as any)
+          .from('precios_actuales')
+          .select('variante_id, supermercado_id, precio_normal, precio_oferta, en_oferta, descuento_pct, disponible')
+          .in('variante_id', varIds)
+
+        const paData = (paRaw as any[] | null) ?? []
+
+        // 3c. Supermercados
+        const superIds = [...new Set(paData.map((p: any) => p.supermercado_id))]
+        const superMap = new Map<number, { nombre: string; nombre_corto: string; color_hex: string }>()
+        if (superIds.length > 0) {
+          const { data: superRaw } = await (db as any)
+            .from('supermercados')
+            .select('id, nombre, nombre_corto, color_hex')
+            .in('id', superIds)
+          for (const s of (superRaw as any[] | null) ?? []) {
+            superMap.set(s.id, { nombre: s.nombre, nombre_corto: s.nombre_corto, color_hex: s.color_hex })
+          }
+        }
+
+        // 3d. Build preciosPorProducto in the same shape the downstream code expects
+        for (const pa of paData) {
+          const prodId = varProdMap.get(pa.variante_id)
+          if (prodId === undefined) continue
+          const s = superMap.get(pa.supermercado_id) ?? null
+          if (!preciosPorProducto.has(prodId)) preciosPorProducto.set(prodId, [])
+          preciosPorProducto.get(prodId)!.push({
+            precio_normal: pa.precio_normal,
+            precio_oferta: pa.precio_oferta,
+            en_oferta:     pa.en_oferta,
+            descuento_pct: pa.descuento_pct,
+            disponible:    pa.disponible,
+            supermercados: s,   // same shape as the embedded-join result
+          })
+        }
       }
     }
 
