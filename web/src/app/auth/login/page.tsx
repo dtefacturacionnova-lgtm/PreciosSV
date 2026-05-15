@@ -30,8 +30,9 @@ function LoginForm() {
       setError('Email o contraseña incorrectos.')
       setCargando(false)
     } else {
-      router.push(next)
-      router.refresh()
+      // Reload completo para que el proxy lea la cookie de sesión recién creada.
+      // router.push() es SPA-navigation y el servidor no detecta la cookie a tiempo.
+      window.location.href = next
     }
   }
 
