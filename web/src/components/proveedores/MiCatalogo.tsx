@@ -568,9 +568,14 @@ export default function MiCatalogo() {
 
   const cargar = useCallback(async () => {
     setCargando(true); setError(null)
-    const res = await fetch('/api/proveedores/catalogo')
-    if (res.ok) setProductos(await res.json())
-    else setError('No se pudo cargar el catálogo')
+    try {
+      const res = await fetch('/api/proveedores/catalogo')
+      const data = await res.json()
+      if (res.ok) setProductos(Array.isArray(data) ? data : (data.productos ?? []))
+      else setError(data.error ?? 'No se pudo cargar el catálogo')
+    } catch {
+      setError('Error de conexión')
+    }
     setCargando(false)
   }, [])
 

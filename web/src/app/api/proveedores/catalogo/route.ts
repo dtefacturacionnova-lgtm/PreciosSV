@@ -77,8 +77,8 @@ export async function POST(req: NextRequest) {
       codigo_interno, pvp_sugerido, notas, categoria_id,
     } = body
 
-    if (!nombre || !marca || !presentacion) {
-      return NextResponse.json({ error: 'nombre, marca y presentacion son requeridos' }, { status: 400 })
+    if (!nombre || !marca) {
+      return NextResponse.json({ error: 'nombre y marca son requeridos' }, { status: 400 })
     }
 
     const db = createServiceClient()
