@@ -71,6 +71,18 @@ export async function GET(
       .rpc('fn_comparativa_precios', { p_catalogo_id: catalogoId })
 
     if (rpcErr) {
+      const isPendingMigration =
+        rpcErr.code === 'PGRST202' ||
+        rpcErr.message?.includes('does not exist') ||
+        rpcErr.message?.includes('no existe')
+      if (isPendingMigration) {
+        return NextResponse.json({
+          enlazado: true,
+          supermercados: [],
+          filas: [],
+          mensaje: 'Comparativa disponible después del primer ciclo de scraping.',
+        })
+      }
       return NextResponse.json({ error: rpcErr.message }, { status: 500 })
     }
 

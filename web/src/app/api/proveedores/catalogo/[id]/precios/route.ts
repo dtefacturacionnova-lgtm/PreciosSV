@@ -59,7 +59,21 @@ export async function GET(
     const { data: precios, error: preciosErr } = await (db as any)
       .rpc('fn_precios_por_producto', { p_producto_id: catalogo.producto_id })
 
+    // Si la función RPC no existe todavía (migración pendiente), devolver estado vacío
     if (preciosErr) {
+      const isPendingMigration =
+        preciosErr.code === 'PGRST202' ||          // function not found
+        preciosErr.message?.includes('does not exist') ||
+        preciosErr.message?.includes('no existe')
+      if (isPendingMigration) {
+        return NextResponse.json({
+          enlazado: true,
+          producto_id: catalogo.producto_id,
+          nombre: catalogo.nombre,
+          precios: [],
+          mensaje: 'Los precios aparecerán aquí después del primer ciclo de scraping.',
+        })
+      }
       return NextResponse.json({ error: preciosErr.message }, { status: 500 })
     }
 
