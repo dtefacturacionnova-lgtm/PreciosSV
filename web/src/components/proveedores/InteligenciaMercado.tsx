@@ -4,12 +4,13 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   RefreshCw, AlertTriangle, Plus, X, Save,
   BarChart3, TrendingDown, ShoppingBag,
-  Bell, LineChart, LayoutGrid, BarChart2,
+  Bell, LineChart, LayoutGrid, BarChart2, Zap,
 } from 'lucide-react'
 import clsx from 'clsx'
 import AlertasCompetencia from './AlertasCompetencia'
 import TendenciasPrecios from './TendenciasPrecios'
 import AnaliticasPrecio from './AnaliticasPrecio'
+import AnomaliasPrecios from './AnomaliasPrecios'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ interface CompetenciaData {
   analisis:       Record<string, MarcaAnalisis>
 }
 
-type SubTab = 'comparativa' | 'alertas' | 'tendencias' | 'analiticas'
+type SubTab = 'comparativa' | 'alertas' | 'tendencias' | 'analiticas' | 'anomalias'
 
 // ─── Vista: Comparativa ───────────────────────────────────────────────────────
 
@@ -392,6 +393,7 @@ export default function InteligenciaMercado() {
     { id: 'alertas',     label: 'Alertas',      icon: Bell       },
     { id: 'tendencias',  label: 'Tendencias',   icon: LineChart  },
     { id: 'analiticas',  label: 'Analíticas',   icon: BarChart2  },
+    { id: 'anomalias',   label: 'Anomalías',    icon: Zap        },
   ]
 
   const sinCompetidores = competidores.length === 0
@@ -457,6 +459,10 @@ export default function InteligenciaMercado() {
 
       {subTab === 'analiticas' && (
         <AnaliticasPrecio />
+      )}
+
+      {subTab === 'anomalias' && (
+        <AnomaliasPrecios />
       )}
     </div>
   )
