@@ -59,86 +59,85 @@ function csvResponse(contenido: string, tipo: string): Response {
 // ─── Exportar cumplimiento ────────────────────────────────────────────────────
 
 async function exportarCumplimiento(prov: any, db: any): Promise<string> {
-  const marcas: string[] = prov.marcas ?? []
-
   const encabezado = filaCSV([
-    'Producto', 'Marca', 'PVP Sugerido', 'Supermercado',
-    'Precio Actual', 'Desviación%', 'Estado',
+    'Producto', 'Marca', 'PVP Sugerido ($)', 'Supermercado',
+    'Precio Actual ($)', 'Desviación%', 'Estado', 'Enlazado',
   ])
 
-  if (marcas.length === 0) return encabezado
-
-  const { data: productosRaw } = await db
-    .from('productos')
-    .select(`
-      id, nombre_normalizado, marca,
-      precios_actuales(
-        precio_normal, precio_oferta, en_oferta,
-        supermercados(nombre, nombre_corto)
-      )
-    `)
-    .in('marca', marcas)
+  // ── 1. Catálogo del proveedor con PVP sugerido ───────────────
+  const { data: catalogoRaw } = await db
+    .from('proveedor_catalogo')
+    .select('id, nombre, marca, pvp_sugerido, producto_id')
+    .eq('proveedor_id', prov.id)
     .eq('activo', true)
-    .order('nombre_normalizado')
+    .not('pvp_sugerido', 'is', null)
+    .order('nombre')
 
-  const productos = (productosRaw as any[] | null) ?? []
-  const productIds = productos.map((p: any) => p.id)
+  const catalogo = (catalogoRaw as any[] | null) ?? []
+  if (catalogo.length === 0) return encabezado
 
-  const { data: refRaw } = productIds.length
-    ? await db
-        .from('proveedor_precios_referencia')
-        .select('producto_id, precio_sugerido, precio_promo, en_promocion')
-        .eq('proveedor_id', prov.id)
-        .in('producto_id', productIds)
-    : { data: [] }
+  // ── 2. Precios actuales para productos enlazados ─────────────
+  const productoIds = catalogo
+    .filter((c: any) => c.producto_id != null)
+    .map((c: any) => c.producto_id as number)
 
-  const refMap = new Map<number, { precio_sugerido: number | null; precio_promo: number | null; en_promocion: boolean }>()
-  for (const r of (refRaw as any[] | null) ?? []) {
-    refMap.set(r.producto_id, {
-      precio_sugerido: r.precio_sugerido != null ? +r.precio_sugerido : null,
-      precio_promo:    r.precio_promo    != null ? +r.precio_promo    : null,
-      en_promocion:    r.en_promocion ?? false,
-    })
+  const preciosPorProducto = new Map<number, any[]>()
+
+  if (productoIds.length > 0) {
+    const { data: prodRaw } = await db
+      .from('productos')
+      .select(`
+        id,
+        precios_actuales(
+          precio_normal, precio_oferta, en_oferta,
+          supermercados(nombre)
+        )
+      `)
+      .in('id', productoIds)
+
+    for (const prod of (prodRaw as any[] | null) ?? []) {
+      preciosPorProducto.set(prod.id, prod.precios_actuales ?? [])
+    }
   }
 
+  // ── 3. Construir CSV ─────────────────────────────────────────
   const filas: string[] = [encabezado]
 
-  for (const prod of productos) {
-    const ref = refMap.get(prod.id) ?? null
-    const precioRef: number | null = ref
-      ? (ref.en_promocion && ref.precio_promo != null ? ref.precio_promo : ref.precio_sugerido)
-      : null
+  for (const c of catalogo) {
+    const pvp    = c.pvp_sugerido != null ? +c.pvp_sugerido : null
+    const precios: any[] = preciosPorProducto.get(c.producto_id) ?? []
+    const enlazado = !!c.producto_id
 
-    const tiendas = ((prod.precios_actuales ?? []) as any[])
-    if (tiendas.length === 0) {
+    if (precios.length === 0) {
       filas.push(filaCSV([
-        prod.nombre_normalizado, prod.marca,
-        precioRef != null ? precioRef.toFixed(2) : '',
-        '', '', '', 'sin_datos',
+        c.nombre, c.marca,
+        pvp != null ? pvp.toFixed(2) : '',
+        '', '', '',
+        enlazado ? 'sin_datos' : 'sin_enlace',
+        enlazado ? 'Sí' : 'No',
       ]))
       continue
     }
 
-    for (const p of tiendas) {
+    for (const p of precios) {
       const s = p.supermercados as any
       const precioEfectivo = +(p.precio_oferta ?? p.precio_normal)
-
       let desviacion_pct: number | null = null
-      let estado = 'sin_referencia'
+      let estado = 'sin_datos'
 
-      if (precioRef !== null) {
-        desviacion_pct = +((precioEfectivo - precioRef) / precioRef * 100).toFixed(1)
+      if (pvp !== null) {
+        desviacion_pct = +((precioEfectivo - pvp) / pvp * 100).toFixed(1)
         estado = desviacion_pct > UMBRAL_PCT ? 'alto' : desviacion_pct < -UMBRAL_PCT ? 'bajo' : 'ok'
       }
 
       filas.push(filaCSV([
-        prod.nombre_normalizado,
-        prod.marca,
-        precioRef != null ? precioRef.toFixed(2) : '',
+        c.nombre, c.marca,
+        pvp != null ? pvp.toFixed(2) : '',
         s?.nombre ?? '—',
         precioEfectivo.toFixed(2),
         desviacion_pct !== null ? desviacion_pct.toFixed(1) : '',
         estado,
+        'Sí',
       ]))
     }
   }
