@@ -24,7 +24,7 @@ export async function GET() {
         id, nombre, marca, presentacion, gramaje, unidad,
         ean_13, upc_12, codigo_interno, imagen_url,
         pvp_sugerido, notas, activo, created_at, updated_at,
-        categoria_id, producto_id,
+        categoria_id, producto_id, categoria, subcategoria,
         categorias(nombre),
         proveedor_competidores_catalogo!left(id, activo)
       `)
@@ -52,7 +52,9 @@ export async function GET() {
       updated_at:      p.updated_at,
       categoria_id:    p.categoria_id,
       producto_id:     p.producto_id ?? null,
-      categoria:       (p.categorias as any)?.nombre ?? null,
+      categoria_sistema: (p.categorias as any)?.nombre ?? null,
+      categoria:       p.categoria ?? null,
+      subcategoria:    p.subcategoria ?? null,
       // Count only active competitors (left join returns all rows; filter by activo)
       competidores_count: Array.isArray(p.proveedor_competidores_catalogo)
         ? p.proveedor_competidores_catalogo.filter((c: any) => c.activo !== false).length
@@ -77,6 +79,7 @@ export async function POST(req: NextRequest) {
       nombre, marca, presentacion,
       gramaje, unidad, ean_13, upc_12,
       codigo_interno, pvp_sugerido, notas, categoria_id,
+      categoria, subcategoria,
     } = body
 
     if (!nombre || !marca) {
@@ -101,6 +104,8 @@ export async function POST(req: NextRequest) {
         pvp_sugerido:   pvp_sugerido ?? null,
         notas:          notas ?? null,
         categoria_id:   categoria_id ?? null,
+        categoria:      categoria ?? null,
+        subcategoria:   subcategoria ?? null,
         activo:         true,
         created_at:     now,
         updated_at:     now,

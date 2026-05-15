@@ -11,6 +11,7 @@ import AlertasCompetencia from './AlertasCompetencia'
 import TendenciasPrecios from './TendenciasPrecios'
 import AnaliticasPrecio from './AnaliticasPrecio'
 import AnomaliasPrecios from './AnomaliasPrecios'
+import ComparativaCatalogo from './ComparativaCatalogo'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -311,6 +312,50 @@ function VistaComparativa({
   )
 }
 
+// ─── ComparativaTab: catálogo (nuevo) + marcas (legacy) ───────────────────────
+
+function ComparativaTab({
+  data,
+  competidores,
+  onCompetidoresGuardados,
+}: {
+  data:                    CompetenciaData
+  competidores:            string[]
+  onCompetidoresGuardados: (nuevos: string[]) => void
+}) {
+  const [vista, setVista] = useState<'catalogo' | 'marcas'>('catalogo')
+  return (
+    <div className="space-y-4">
+      {/* Toggle */}
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+        <button
+          onClick={() => setVista('catalogo')}
+          className={clsx(
+            'px-4 py-2 rounded-lg text-sm font-medium transition-all',
+            vista === 'catalogo' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700',
+          )}
+        >
+          Por producto
+        </button>
+        <button
+          onClick={() => setVista('marcas')}
+          className={clsx(
+            'px-4 py-2 rounded-lg text-sm font-medium transition-all',
+            vista === 'marcas' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700',
+          )}
+        >
+          Por marca
+        </button>
+      </div>
+
+      {vista === 'catalogo'
+        ? <ComparativaCatalogo />
+        : <VistaComparativa data={data} competidores={competidores} onCompetidoresGuardados={onCompetidoresGuardados} />
+      }
+    </div>
+  )
+}
+
 // ─── Componente raíz ──────────────────────────────────────────────────────────
 
 export default function InteligenciaMercado() {
@@ -439,7 +484,7 @@ export default function InteligenciaMercado() {
 
       {/* Contenido del sub-tab */}
       {subTab === 'comparativa' && (
-        <VistaComparativa
+        <ComparativaTab
           data={data}
           competidores={competidores}
           onCompetidoresGuardados={nuevos => {

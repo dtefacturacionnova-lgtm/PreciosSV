@@ -41,6 +41,8 @@ interface Producto {
   activo:           boolean
   competidores_count: number
   producto_id:      number | null   // null = sin enlace al sistema de precios
+  categoria:        string | null   // taxonomía libre del proveedor
+  subcategoria:     string | null
 }
 
 // ─── Tipos para el panel de precios ──────────────────────────────────────────
@@ -100,12 +102,14 @@ interface ProductoForm {
   nombre: string; marca: string; presentacion: string; gramaje: string
   unidad: string; ean_13: string; upc_12: string; codigo_interno: string
   pvp_sugerido: string; notas: string
+  categoria: string; subcategoria: string
 }
 
 const PRODUCTO_VACIO: ProductoForm = {
   nombre: '', marca: '', presentacion: '', gramaje: '',
   unidad: 'g', ean_13: '', upc_12: '', codigo_interno: '',
   pvp_sugerido: '', notas: '',
+  categoria: '', subcategoria: '',
 }
 
 // ─── Formulario de competidor ─────────────────────────────────────────────────
@@ -171,6 +175,7 @@ function ModalProducto({ producto, onClose, onSaved }: {
           unidad: producto.unidad ?? 'g', ean_13: producto.ean_13 ?? '',
           upc_12: producto.upc_12 ?? '', codigo_interno: producto.codigo_interno ?? '',
           pvp_sugerido: producto.pvp_sugerido?.toString() ?? '', notas: producto.notas ?? '',
+          categoria: producto.categoria ?? '', subcategoria: producto.subcategoria ?? '',
         }
       : PRODUCTO_VACIO
   )
@@ -196,6 +201,8 @@ function ModalProducto({ producto, onClose, onSaved }: {
       codigo_interno: form.codigo_interno || null,
       pvp_sugerido: form.pvp_sugerido ? +form.pvp_sugerido : null,
       notas: form.notas || null,
+      categoria: form.categoria.trim() || null,
+      subcategoria: form.subcategoria.trim() || null,
     }
     const url = producto ? `/api/proveedores/catalogo/${producto.id}` : '/api/proveedores/catalogo'
     const method = producto ? 'PATCH' : 'POST'
@@ -250,6 +257,12 @@ function ModalProducto({ producto, onClose, onSaved }: {
             <input className={inputCls} type="number" min="0" step="0.01" value={form.pvp_sugerido} onChange={e => set('pvp_sugerido', e.target.value)} placeholder="1.25" />
           </Campo>
         </div>
+        <Campo label="Categoría" hint="Ej: Cuidado Personal, Alimentos, Limpieza">
+          <input className={inputCls} value={form.categoria} onChange={e => set('categoria', e.target.value)} placeholder="Ej: Cuidado Personal" />
+        </Campo>
+        <Campo label="SubCategoría" hint="Ej: Jabones, Champús, Desodorantes">
+          <input className={inputCls} value={form.subcategoria} onChange={e => set('subcategoria', e.target.value)} placeholder="Ej: Jabones" />
+        </Campo>
         <div className="col-span-2">
           <Campo label="Notas internas">
             <textarea className={inputCls} rows={2} value={form.notas} onChange={e => set('notas', e.target.value)} placeholder="Observaciones sobre el producto…" />
@@ -670,6 +683,11 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
               {p.ean_13 && (
                 <span className="text-xs text-slate-400 flex items-center gap-0.5">
                   <Barcode className="w-3 h-3" />{p.ean_13}
+                </span>
+              )}
+              {p.categoria && (
+                <span className="text-xs bg-violet-50 text-violet-600 px-1.5 py-0.5 rounded-full">
+                  {p.categoria}{p.subcategoria ? ` › ${p.subcategoria}` : ''}
                 </span>
               )}
               {p.pvp_sugerido && (
