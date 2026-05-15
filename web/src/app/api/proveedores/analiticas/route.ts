@@ -79,16 +79,17 @@ export async function GET() {
 
     // ── Estructuras de agregación ──────────────────────────────────
 
-    // precio efectivo por producto × supermercado × si es propio
-    // clave: `${producto_id}::${superKey}`
-    type EntradaProducto = {
-      nombre:      string
-      imagen_url:  string | null
-      es_propio:   boolean
-      superKey:    string
-      precio:      number
+    // ── a) Precio promedio de mercado (sólo competidores) y propio
+    //        por (nombre_normalizado × cadena) ──────────────────────
+    type GrupoProducto = {
+      nombre:       string
+      imagen_url:   string | null
+      superKey:     string
+      propios:      number[]   // precios de mis marcas
+      competidores: number[]   // precios de marcas competidoras (excluyendo las propias)
     }
-    const entradas: EntradaProducto[] = []
+
+    const grupos = new Map<string, GrupoProducto>()
 
     for (const f of filas) {
       const marca: string = f.productos?.marca
@@ -96,65 +97,43 @@ export async function GET() {
       const superKey: string = f.supermercados?.nombre_corto
       if (!superKey) continue
 
-      const esPropioFila = marcasPropias.includes(marca)
+      const esPropioFila   = marcasPropias.includes(marca)
       const precioEfectivo = (f.precio_oferta ?? f.precio_normal) as number
+      const nombre         = (f.productos?.nombre_normalizado ?? '') as string
 
-      entradas.push({
-        nombre:     f.productos?.nombre_normalizado ?? '',
-        imagen_url: f.productos?.imagen_url ?? null,
-        es_propio:  esPropioFila,
-        superKey,
-        precio:     precioEfectivo,
-      })
-    }
-
-    // ── a) Precio promedio mercado y propio por (producto × cadena) ──
-    // Agrupar por nombre_normalizado × superKey → propio + mercado
-    type GrupoProducto = {
-      nombre:     string
-      imagen_url: string | null
-      superKey:   string
-      propios:    number[]
-      mercado:    number[]   // todos (propios + competidores)
-    }
-
-    const grupos = new Map<string, GrupoProducto>()
-
-    for (const e of entradas) {
-      const clave = `${e.nombre}::${e.superKey}`
+      const clave = `${nombre}::${superKey}`
       if (!grupos.has(clave)) {
         grupos.set(clave, {
-          nombre:     e.nombre,
-          imagen_url: e.imagen_url,
-          superKey:   e.superKey,
-          propios:    [],
-          mercado:    [],
+          nombre,
+          imagen_url:   f.productos?.imagen_url ?? null,
+          superKey,
+          propios:      [],
+          competidores: [],
         })
       }
       const g = grupos.get(clave)!
-      g.mercado.push(e.precio)
-      if (e.es_propio) g.propios.push(e.precio)
+      if (esPropioFila) g.propios.push(precioEfectivo)
+      else              g.competidores.push(precioEfectivo)
     }
 
     // ── b) Calcular índice por SKU × cadena ───────────────────────
     type SKUIndice = {
-      nombre:       string
-      imagen_url:   string | null
-      superKey:     string
-      precio_propio: number
+      nombre:         string
+      imagen_url:     string | null
+      superKey:       string
+      precio_propio:  number
       precio_mercado: number
       diferencia_pct: number     // (propio/mercado - 1)*100
     }
     const skuIndices: SKUIndice[] = []
 
     for (const g of grupos.values()) {
-      if (g.propios.length === 0) continue  // no tenemos precio propio aquí
-      // necesitamos competidores en este super para comparar
-      const competidorPrecios = g.mercado.filter(p => !g.propios.includes(p))
-      if (competidorPrecios.length === 0) continue
+      if (g.propios.length === 0)      continue  // no tenemos precio propio aquí
+      if (g.competidores.length === 0) continue  // sin competidores en este super → no comparar
 
       const precioPropio   = g.propios.reduce((a, b) => a + b, 0) / g.propios.length
-      const precioMercado  = g.mercado.reduce((a, b) => a + b, 0) / g.mercado.length
+      // Precio mercado = sólo competidores (excluye las propias marcas)
+      const precioMercado  = g.competidores.reduce((a, b) => a + b, 0) / g.competidores.length
       const diferencia_pct = +((precioPropio / precioMercado - 1) * 100).toFixed(2)
 
       skuIndices.push({

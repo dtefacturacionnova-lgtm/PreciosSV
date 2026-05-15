@@ -21,6 +21,7 @@ interface Recomendacion {
   accion:                  'bajar' | 'subir' | 'mantener'
   prioridad:               'alta' | 'media' | 'baja'
   impacto_estimado:        string
+  comparacion_tipo?:       'categoria' | 'global'
 }
 
 interface RecomendacionesData {
@@ -120,9 +121,19 @@ function TarjetaRecomendacion({ rec }: { rec: Recomendacion }) {
         {/* Texto de recomendación */}
         <p className="text-xs text-slate-600 leading-relaxed mb-2">{rec.recomendacion}</p>
 
-        {/* Impacto + prioridad */}
+        {/* Impacto + prioridad + tipo comparación */}
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-slate-400">{rec.impacto_estimado}</span>
+          {rec.comparacion_tipo && (
+            <span className={clsx(
+              'text-[10px] font-medium px-1.5 py-0.5 rounded-full',
+              rec.comparacion_tipo === 'categoria'
+                ? 'bg-violet-50 text-violet-600'
+                : 'bg-slate-100 text-slate-500',
+            )}>
+              {rec.comparacion_tipo === 'categoria' ? 'Por categoría' : 'Mercado global'}
+            </span>
+          )}
           <span className={clsx(
             'text-xs font-semibold px-2 py-0.5 rounded-full ml-auto',
             prioridad.bg, prioridad.text,
@@ -230,7 +241,7 @@ export default function RecomendacionesPrecio() {
       </div>
 
       <p className="text-xs text-center text-slate-400">
-        Recomendaciones basadas en precios actuales vs. mercado de competidores configurados
+        Comparación por categoría cuando hay ≥2 precios de competidores en la misma; mercado global como fallback
       </p>
     </div>
   )
