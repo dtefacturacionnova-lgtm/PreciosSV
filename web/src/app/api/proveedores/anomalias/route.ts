@@ -51,10 +51,10 @@ export async function GET() {
     )
     const productIds = productosData.map((p: any) => p.id)
 
-    // ── 2. Variantes ──────────────────────────────────────────────
+    // ── 2. Variantes (incluye supermercado_id para identificar cadena) ───
     const { data: varRaw } = await db
       .from('producto_variantes')
-      .select('id, producto_id, descripcion')
+      .select('id, producto_id, supermercado_id, descripcion')
       .in('producto_id', productIds)
       .eq('activo', true)
 
@@ -63,38 +63,47 @@ export async function GET() {
       return NextResponse.json({ anomalias: [], total: 0, sin_historial: true })
     }
 
-    const varianteMap = new Map<number, { producto_id: number; descripcion: string | null }>(
-      variantes.map((v: any) => [v.id, { producto_id: v.producto_id, descripcion: v.descripcion ?? null }])
+    const varianteMap = new Map<number, { producto_id: number; supermercado_id: number; descripcion: string | null }>(
+      variantes.map((v: any) => [v.id, {
+        producto_id:    v.producto_id,
+        supermercado_id: v.supermercado_id,
+        descripcion:    v.descripcion ?? null,
+      }])
     )
     const varianteIds = variantes.map((v: any) => v.id)
 
     // ── 3. Supermercados (para nombre y color) ────────────────────
     const { data: superRaw } = await db
       .from('supermercados')
-      .select('key, nombre, color')
+      .select('id, nombre_corto, nombre, color_hex')
 
-    const superMap = new Map<string, { nombre: string; color: string }>(
-      ((superRaw as any[] | null) ?? []).map((s: any) => [s.key, { nombre: s.nombre, color: s.color }])
+    // indexed by supermercado ID
+    const superMap = new Map<number, { key: string; nombre: string; color: string }>(
+      ((superRaw as any[] | null) ?? []).map((s: any) => [
+        s.id, { key: s.nombre_corto, nombre: s.nombre, color: s.color_hex }
+      ])
     )
 
     // ── 4. Precios de los últimos 14 días ─────────────────────────
+    // Note: precios has no supermercado column — the supermercado is
+    // encoded via variante_id → producto_variantes.supermercado_id
     const { data: preciosRaw } = await db
       .from('precios')
-      .select('variante_id, precio_normal, precio_oferta, fecha_hora, supermercado_key')
+      .select('variante_id, precio_normal, precio_oferta, fecha_hora')
       .in('variante_id', varianteIds)
       .gte('fecha_hora', hace14d)
       .order('fecha_hora', { ascending: true })
 
     const precios = (preciosRaw as any[] | null) ?? []
 
-    // Agrupar por variante_id → supermercado_key → [ baseline[], reciente[] ]
+    // Agrupar por variante_id (cada variante es única por supermercado)
     type GrupoPrecios = { baseline: number[]; reciente: number[] }
-    const grupos = new Map<string, GrupoPrecios>()
+    const grupos = new Map<number, GrupoPrecios>()
 
     for (const p of precios) {
-      const clave = `${p.variante_id}__${p.supermercado_key}`
-      if (!grupos.has(clave)) grupos.set(clave, { baseline: [], reciente: [] })
-      const g = grupos.get(clave)!
+      const vid = p.variante_id as number
+      if (!grupos.has(vid)) grupos.set(vid, { baseline: [], reciente: [] })
+      const g = grupos.get(vid)!
       const precioEfectivo = +(p.precio_oferta ?? p.precio_normal)
       const esReciente = p.fecha_hora >= hace7d
       if (esReciente) {
@@ -128,11 +137,8 @@ export async function GET() {
       detectado_en:   string
     }[] = []
 
-    for (const [clave, g] of grupos) {
+    for (const [varianteId, g] of grupos) {
       if (g.baseline.length < 3 || g.reciente.length < 1) continue
-
-      const [varianteIdStr, supKey] = clave.split('__')
-      const varianteId = +varianteIdStr
 
       const mediaBase = promedio(g.baseline)
       const sigma     = desviacion(g.baseline, mediaBase)
@@ -150,7 +156,7 @@ export async function GET() {
       if (!varInfo) continue
       const prodInfo   = productoMap.get(varInfo.producto_id)
       if (!prodInfo) continue
-      const superInfo  = superMap.get(supKey)
+      const superInfo  = superMap.get(varInfo.supermercado_id)
 
       const nombre = varInfo.descripcion
         ? `${prodInfo.nombre} — ${varInfo.descripcion}`
@@ -159,8 +165,8 @@ export async function GET() {
       anomalias.push({
         variante_id:     varianteId,
         nombre,
-        supermercado:    superInfo?.nombre ?? supKey,
-        color:           superInfo?.color  ?? '#94A3B8',
+        supermercado:    superInfo?.nombre    ?? `super_${varInfo.supermercado_id}`,
+        color:           superInfo?.color     ?? '#94A3B8',
         marca:           prodInfo.marca,
         es_propio:       marcasPropias.includes(prodInfo.marca),
         precio_anterior: +mediaBase.toFixed(2),
