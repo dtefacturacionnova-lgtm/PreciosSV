@@ -4,7 +4,8 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   Plus, Package, Pencil, Trash2, ChevronDown, ChevronUp,
   RefreshCw, X, Check, AlertTriangle, Barcode, Users,
-  Star, ArrowUpDown,
+  Star, ArrowUpDown, Link2, Link2Off, ShoppingCart,
+  TrendingUp, TrendingDown, Minus, ExternalLink,
 } from 'lucide-react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -39,6 +40,39 @@ interface Producto {
   notas:            string | null
   activo:           boolean
   competidores_count: number
+  producto_id:      number | null   // null = sin enlace al sistema de precios
+}
+
+// ─── Tipos para el panel de precios ──────────────────────────────────────────
+
+interface PrecioSuper {
+  supermercado_key:    string
+  supermercado_nombre: string
+  logo_url:            string | null
+  nombre_local:        string | null
+  url_producto:        string | null
+  precio_normal:       number
+  precio_oferta:       number | null
+  en_oferta:           boolean
+  descuento_pct:       number | null
+  condicion_oferta:    string | null
+  disponible:          boolean
+  fecha_hora:          string
+}
+
+interface DatoComparativa {
+  es_propio:           boolean
+  etiqueta:            string
+  marca:               string
+  tipo_relacion:       string | null
+  factor_conversion:   number
+  supermercado_key:    string
+  supermercado_nombre: string
+  precio_normal:       number
+  precio_oferta:       number | null
+  en_oferta:           boolean
+  precio_normalizado:  number
+  fecha_hora:          string
 }
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -461,12 +495,128 @@ function PanelCompetidores({ productoId }: { productoId: number }) {
   )
 }
 
+// ─── Panel de precios en supermercados ────────────────────────────────────────
+
+function PanelPrecios({ productoId, pvpSugerido }: { productoId: number; pvpSugerido: number | null }) {
+  const [estado, setEstado] = useState<{
+    cargando: boolean
+    enlazado: boolean
+    precios: PrecioSuper[]
+    mensaje?: string
+  }>({ cargando: true, enlazado: false, precios: [] })
+
+  useEffect(() => {
+    fetch(`/api/proveedores/catalogo/${productoId}/precios`)
+      .then(r => r.json())
+      .then(d => setEstado({ cargando: false, enlazado: d.enlazado, precios: d.precios ?? [], mensaje: d.mensaje }))
+      .catch(() => setEstado({ cargando: false, enlazado: false, precios: [], mensaje: 'Error de conexión' }))
+  }, [productoId])
+
+  if (estado.cargando) {
+    return (
+      <div className="bg-slate-50 rounded-xl p-4 mt-2 border border-slate-100 flex items-center gap-2 text-slate-400 text-xs">
+        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Cargando precios…
+      </div>
+    )
+  }
+
+  if (!estado.enlazado || estado.precios.length === 0) {
+    return (
+      <div className="bg-slate-50 rounded-xl p-4 mt-2 border border-slate-100">
+        <div className="flex items-center gap-2 mb-2">
+          <ShoppingCart className="w-3.5 h-3.5 text-slate-400" />
+          <p className="text-xs font-semibold text-slate-600">Precios en supermercados</p>
+        </div>
+        <p className="text-xs text-slate-400 text-center py-4">
+          {estado.mensaje ?? 'Sin datos disponibles.'}
+        </p>
+        {!estado.enlazado && (
+          <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 flex items-center gap-1.5">
+            <Link2Off className="w-3.5 h-3.5 flex-shrink-0" />
+            Agrega un EAN-13 al producto para activar el enlace automático con los scrapers.
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-slate-50 rounded-xl p-4 mt-2 border border-slate-100">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+          <ShoppingCart className="w-3.5 h-3.5" /> Precios en supermercados
+        </p>
+        <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full flex items-center gap-1">
+          <Link2 className="w-3 h-3" /> Enlazado
+        </span>
+      </div>
+      <div className="space-y-2">
+        {estado.precios.map(pr => {
+          const precio = pr.en_oferta ? pr.precio_oferta! : pr.precio_normal
+          const vsPvp = pvpSugerido
+            ? Math.round(((precio - pvpSugerido) / pvpSugerido) * 100)
+            : null
+
+          return (
+            <div key={pr.supermercado_key} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-slate-100">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center flex-shrink-0">
+                  <ShoppingCart className="w-3 h-3 text-slate-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-slate-700 truncate">{pr.supermercado_nombre}</p>
+                  {pr.nombre_local && (
+                    <p className="text-[10px] text-slate-400 truncate">{pr.nombre_local}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                {pr.en_oferta && (
+                  <span className="text-[10px] text-slate-400 line-through">${pr.precio_normal.toFixed(2)}</span>
+                )}
+                <span className={`text-sm font-semibold ${pr.en_oferta ? 'text-emerald-600' : 'text-slate-800'}`}>
+                  ${precio.toFixed(2)}
+                </span>
+                {pr.en_oferta && pr.descuento_pct && (
+                  <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">
+                    -{pr.descuento_pct.toFixed(0)}%
+                  </span>
+                )}
+                {vsPvp !== null && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${
+                    vsPvp <= 0 ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'
+                  }`}>
+                    {vsPvp <= 0 ? <TrendingDown className="w-2.5 h-2.5" /> : <TrendingUp className="w-2.5 h-2.5" />}
+                    {vsPvp > 0 ? '+' : ''}{vsPvp}% vs PVP
+                  </span>
+                )}
+                {pr.url_producto && (
+                  <a href={pr.url_producto} target="_blank" rel="noopener noreferrer"
+                     className="p-1 hover:bg-slate-100 rounded text-slate-300 hover:text-blue-500 transition-colors">
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p className="text-[10px] text-slate-300 mt-2 text-right">
+        Última actualización: {new Date(estado.precios[0].fecha_hora).toLocaleDateString('es-SV')}
+      </p>
+    </div>
+  )
+}
+
 // ─── Fila de producto ─────────────────────────────────────────────────────────
 
 function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => void }) {
-  const [expandido, setExpandido] = useState(false)
-  const [editando,  setEditando]  = useState(false)
-  const [borrando,  setBorrando]  = useState(false)
+  const [panel,    setPanel]    = useState<'competidores' | 'precios' | null>(null)
+  const [editando, setEditando] = useState(false)
+  const [borrando, setBorrando] = useState(false)
+
+  const togglePanel = (nombre: 'competidores' | 'precios') =>
+    setPanel(prev => (prev === nombre ? null : nombre))
 
   async function eliminar() {
     if (!confirm(`¿Desactivar "${p.nombre}"? Puedes reactivarlo luego.`)) return
@@ -480,6 +630,8 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
     p.gramaje ? `${p.gramaje}${p.unidad ?? ''}` : null,
   ].filter(Boolean).join(' ')
 
+  const enlazado = !!p.producto_id
+
   return (
     <>
       {editando && (
@@ -492,9 +644,21 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
         {/* Fila principal */}
         <div className="flex items-center gap-3 p-4">
-          {/* Icono */}
-          <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-            <Package className="w-4 h-4 text-blue-500" />
+          {/* Icono + badge de enlace */}
+          <div className="relative flex-shrink-0">
+            <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
+              <Package className="w-4 h-4 text-blue-500" />
+            </div>
+            {/* Indicador de enlace al sistema de precios */}
+            <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center
+              ${enlazado ? 'bg-emerald-500' : 'bg-slate-300'}`}
+              title={enlazado ? 'Enlazado al sistema de precios' : 'Sin enlace — agrega EAN para enlazar'}
+            >
+              {enlazado
+                ? <Link2 className="w-2.5 h-2.5 text-white" />
+                : <Link2Off className="w-2.5 h-2.5 text-white" />
+              }
+            </div>
           </div>
 
           {/* Info producto */}
@@ -516,18 +680,39 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
             </div>
           </div>
 
-          {/* Competidores badge */}
-          <button
-            onClick={() => setExpandido(v => !v)}
-            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-blue-600 transition-colors px-2 py-1 rounded-lg hover:bg-blue-50"
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span className="font-medium">{p.competidores_count}</span>
-            {expandido ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
+          {/* Botones de panel */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Precios en supermercados */}
+            <button
+              onClick={() => togglePanel('precios')}
+              title="Ver precios en supermercados"
+              className={`flex items-center gap-1 text-xs px-2 py-1 rounded-lg transition-colors
+                ${panel === 'precios'
+                  ? 'bg-indigo-600 text-white'
+                  : enlazado
+                    ? 'text-indigo-600 hover:bg-indigo-50'
+                    : 'text-slate-300 hover:bg-slate-50'
+                }`}
+            >
+              <ShoppingCart className="w-3.5 h-3.5" />
+              {panel === 'precios' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
 
-          {/* Acciones */}
-          <div className="flex items-center gap-1 flex-shrink-0">
+            {/* Competidores */}
+            <button
+              onClick={() => togglePanel('competidores')}
+              className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg transition-colors
+                ${panel === 'competidores'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'
+                }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span className="font-medium">{p.competidores_count}</span>
+              {panel === 'competidores' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+
+            {/* Editar / Eliminar */}
             <button
               onClick={() => setEditando(true)}
               className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors"
@@ -546,8 +731,13 @@ function FilaProducto({ p, onActualizar }: { p: Producto; onActualizar: () => vo
           </div>
         </div>
 
-        {/* Panel competidores expandible */}
-        {expandido && (
+        {/* Paneles expandibles */}
+        {panel === 'precios' && (
+          <div className="px-4 pb-4">
+            <PanelPrecios productoId={p.id} pvpSugerido={p.pvp_sugerido} />
+          </div>
+        )}
+        {panel === 'competidores' && (
           <div className="px-4 pb-4">
             <PanelCompetidores productoId={p.id} />
           </div>
@@ -601,15 +791,17 @@ export default function MiCatalogo() {
       )}
 
       {/* Métricas rápidas */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
         {[
-          { label: 'Productos registrados', valor: productos.length, color: 'text-blue-600' },
-          { label: 'Competidores mapeados', valor: totalCompetidores, color: 'text-purple-600' },
-          { label: 'Con EAN registrado', valor: productos.filter(p => p.ean_13).length, color: 'text-emerald-600' },
+          { label: 'Productos registrados', valor: productos.length,                                        color: 'text-blue-600',   Icon: Package },
+          { label: 'Con EAN registrado',    valor: productos.filter(p => p.ean_13).length,                  color: 'text-indigo-600', Icon: Barcode },
+          { label: 'Enlazados al sistema',  valor: productos.filter(p => p.producto_id).length,             color: 'text-emerald-600',Icon: Link2 },
+          { label: 'Competidores mapeados', valor: totalCompetidores,                                       color: 'text-purple-600', Icon: Users },
         ].map(m => (
           <div key={m.label} className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 text-center">
+            <m.Icon className={`w-4 h-4 mx-auto mb-1 ${m.color} opacity-60`} />
             <p className={`text-2xl font-bold ${m.color}`}>{m.valor}</p>
-            <p className="text-xs text-slate-500 mt-1">{m.label}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{m.label}</p>
           </div>
         ))}
       </div>
@@ -671,7 +863,9 @@ export default function MiCatalogo() {
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-slate-400">
-            {filtrados.length} producto{filtrados.length !== 1 ? 's' : ''} — haz clic en el botón de competidores para ver y gestionar equivalentes
+            {filtrados.length} producto{filtrados.length !== 1 ? 's' : ''} —
+            <span className="inline-flex items-center gap-0.5 mx-1"><ShoppingCart className="w-3 h-3" /> ver precios</span> en supermercados,
+            <span className="inline-flex items-center gap-0.5 mx-1"><Users className="w-3 h-3" /> gestionar</span> competidores
           </p>
           {filtrados.map(p => (
             <FilaProducto key={p.id} p={p} onActualizar={cargar} />

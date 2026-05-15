@@ -24,7 +24,7 @@ export async function GET() {
         id, nombre, marca, presentacion, gramaje, unidad,
         ean_13, upc_12, codigo_interno, imagen_url,
         pvp_sugerido, notas, activo, created_at, updated_at,
-        categoria_id,
+        categoria_id, producto_id,
         categorias(nombre),
         proveedor_competidores_catalogo(count)
       `)
@@ -51,6 +51,7 @@ export async function GET() {
       created_at:      p.created_at,
       updated_at:      p.updated_at,
       categoria_id:    p.categoria_id,
+      producto_id:     p.producto_id ?? null,
       categoria:       (p.categorias as any)?.nombre ?? null,
       competidores_count: Array.isArray(p.proveedor_competidores_catalogo)
         ? p.proveedor_competidores_catalogo.filter((c: any) => c.activo !== false).length
