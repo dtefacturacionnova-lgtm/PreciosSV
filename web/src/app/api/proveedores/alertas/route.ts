@@ -36,7 +36,7 @@ export async function GET() {
     }
 
     // ── 1. Ofertas activas de competidores ───────────────────────
-    const { data: ofertasRaw } = await db
+    const { data: ofertasRaw, error: ofertasErr } = await db
       .from('precios_actuales')
       .select(`
         variante_id,
@@ -52,6 +52,7 @@ export async function GET() {
       .eq('producto_variantes.activo', true)
       .order('descuento_pct', { ascending: false })
 
+    if (ofertasErr) console.error('[proveedores/alertas] ofertasRaw query:', ofertasErr)
     const filas = (ofertasRaw as any[] | null) ?? []
     if (filas.length === 0) {
       return NextResponse.json({ alertas: [], total_ofertas: 0, tiene_competidores: true })

@@ -47,7 +47,7 @@ export async function GET() {
     const todasLasMarcas = [...new Set([...marcasPropias, ...competidores])]
 
     // ── Precios actuales de todas las marcas relevantes ────────────
-    const { data: rawPrecios } = await db
+    const { data: rawPrecios, error: preciosErr } = await db
       .from('precios_actuales')
       .select(`
         producto_id,
@@ -62,6 +62,7 @@ export async function GET() {
       .eq('productos.activo', true)
       .eq('producto_variantes.activo', true)
 
+    if (preciosErr) console.error('[proveedores/analiticas] rawPrecios query:', preciosErr)
     const filas = (rawPrecios as any[] | null) ?? []
 
     if (filas.length === 0) {

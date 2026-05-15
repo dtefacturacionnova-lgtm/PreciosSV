@@ -26,7 +26,7 @@ export async function GET() {
         pvp_sugerido, notas, activo, created_at, updated_at,
         categoria_id, producto_id,
         categorias(nombre),
-        proveedor_competidores_catalogo(count)
+        proveedor_competidores_catalogo!left(id, activo)
       `)
       .eq('proveedor_id', proveedor.id)
       .eq('activo', true)
@@ -53,9 +53,10 @@ export async function GET() {
       categoria_id:    p.categoria_id,
       producto_id:     p.producto_id ?? null,
       categoria:       (p.categorias as any)?.nombre ?? null,
+      // Count only active competitors (left join returns all rows; filter by activo)
       competidores_count: Array.isArray(p.proveedor_competidores_catalogo)
         ? p.proveedor_competidores_catalogo.filter((c: any) => c.activo !== false).length
-        : ((p.proveedor_competidores_catalogo as any)?.[0]?.count ?? 0),
+        : 0,
     }))
 
     return NextResponse.json({ productos })
