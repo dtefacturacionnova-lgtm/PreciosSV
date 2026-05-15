@@ -5,13 +5,14 @@ import Link from 'next/link'
 import {
   Package, Tag, Store, TrendingDown,
   RefreshCw, Building2, BarChart2, ShoppingBag,
-  ShieldCheck, LineChart, Lightbulb,
+  ShieldCheck, LineChart, Lightbulb, BookOpen,
 } from 'lucide-react'
 import MetricaCard from '@/components/proveedores/MetricaCard'
 import TablaProductos from '@/components/proveedores/TablaProductos'
 import CumplimientoPrecios from '@/components/proveedores/CumplimientoPrecios'
 import InteligenciaMercado from '@/components/proveedores/InteligenciaMercado'
 import RecomendacionesPrecio from '@/components/proveedores/RecomendacionesPrecio'
+import MiCatalogo from '@/components/proveedores/MiCatalogo'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ interface DashboardData {
   tabla:     any[]
 }
 
-type Tab = 'catalogo' | 'cumplimiento' | 'mercado' | 'recomendaciones'
+type Tab = 'catalogo' | 'cumplimiento' | 'mercado' | 'recomendaciones' | 'micatalogo'
 
 // ─── Sub-componente: barra de cobertura ──────────────────────────────────────
 
@@ -195,9 +196,10 @@ export default function DashboardProveedorPage() {
 
   // ── Tabs config ────────────────────────────────────────────────
   const TABS: { id: Tab; label: string; icon: typeof ShoppingBag; desc: string }[] = [
-    { id: 'catalogo',         label: 'Catálogo',                icon: ShoppingBag,  desc: 'Productos y precios actuales' },
-    { id: 'cumplimiento',     label: 'Cumplimiento de PVP',     icon: ShieldCheck,  desc: 'Verifica que los supers respeten tu precio sugerido' },
-    { id: 'mercado',          label: 'Inteligencia de Mercado', icon: LineChart,     desc: 'Compara tus marcas vs. competidores' },
+    { id: 'micatalogo',       label: 'Mi Catálogo',             icon: BookOpen,     desc: 'Registra tus productos con EAN y mapea competidores equivalentes' },
+    { id: 'catalogo',         label: 'Mercado',                 icon: ShoppingBag,  desc: 'Precios actuales de tus marcas en supermercados' },
+    { id: 'cumplimiento',     label: 'Cumplimiento PVP',        icon: ShieldCheck,  desc: 'Verifica que los supers respeten tu precio sugerido' },
+    { id: 'mercado',          label: 'Inteligencia',            icon: LineChart,     desc: 'Compara tus marcas vs. competidores' },
     { id: 'recomendaciones',  label: 'Recomendaciones',         icon: Lightbulb,    desc: 'Recomendaciones inteligentes de pricing basadas en el mercado' },
   ]
 
@@ -285,6 +287,7 @@ export default function DashboardProveedorPage() {
       })()}
 
       {/* Contenido del tab */}
+      {tab === 'micatalogo'      && <MiCatalogo />}
       {tab === 'catalogo'        && <TabCatalogo metricas={metricas} tabla={tabla} />}
       {tab === 'cumplimiento'    && <CumplimientoPrecios />}
       {tab === 'mercado'         && <InteligenciaMercado />}
