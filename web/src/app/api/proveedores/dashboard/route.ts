@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { getProveedorAutenticadoODev } from '@/lib/supabase/auth-proveedor'
 import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
@@ -8,16 +9,10 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    const db = createServiceClient()
-
     // ── 1. Proveedor ──────────────────────────────────────────────
-    const { data: pRaw } = await db
-      .from('proveedores')
-      .select('id, razon_social')
-      .limit(1)
-      .single()
-    const proveedor = pRaw as any
-    if (!proveedor) return NextResponse.json({ error: 'Proveedor no registrado' }, { status: 404 })
+    const proveedor = await getProveedorAutenticadoODev()
+    if (!proveedor) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+    const db = createServiceClient()
 
     // ── 2. Catálogo propio ─────────────────────────────────────────
     const { data: catalogoRaw } = await (db as any)

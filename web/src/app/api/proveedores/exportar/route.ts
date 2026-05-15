@@ -3,6 +3,7 @@
  * Exporta datos del dashboard de proveedores en formato CSV.
  */
 import { createServiceClient } from '@/lib/supabase/service'
+import { getProveedorAutenticadoODev } from '@/lib/supabase/auth-proveedor'
 import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
@@ -31,16 +32,9 @@ function fechaHoy(): string {
 // ─── Auth compartida ──────────────────────────────────────────────────────────
 
 async function autenticarProveedor() {
+  const prov = await getProveedorAutenticadoODev()
+  if (!prov) return { error: 'No autorizado', status: 401, prov: null, db: null }
   const db = createServiceClient()
-
-  const { data: pRaw } = await db
-    .from('proveedores')
-    .select('id')
-    .limit(1)
-    .single()
-  const prov = pRaw as any
-  if (!prov) return { error: 'Proveedor no encontrado', status: 404, prov: null, db: null }
-
   return { error: null, status: 200, prov, db }
 }
 

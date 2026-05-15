@@ -1,19 +1,13 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { getProveedorAutenticadoODev } from '@/lib/supabase/auth-proveedor'
 import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-async function getProveedor() {
-  const db = createServiceClient()
-  const { data: pRaw } = await db.from('proveedores').select('id,marcas,competidores').limit(1).single()
-  const p = pRaw as any
-  return p ?? null
-}
-
 // GET — returns all products for the proveedor with competitor count per product
 export async function GET() {
   try {
-    const proveedor = await getProveedor()
+    const proveedor = await getProveedorAutenticadoODev()
     if (!proveedor) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
     const db = createServiceClient()
@@ -71,7 +65,7 @@ export async function GET() {
 // POST — creates a new product
 export async function POST(req: NextRequest) {
   try {
-    const proveedor = await getProveedor()
+    const proveedor = await getProveedorAutenticadoODev()
     if (!proveedor) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
     const body = await req.json()

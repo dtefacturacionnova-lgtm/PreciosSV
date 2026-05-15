@@ -7,21 +7,16 @@
  * from it. All joins are resolved manually to avoid silent query failures.
  */
 import { createServiceClient } from '@/lib/supabase/service'
+import { getProveedorAutenticadoODev } from '@/lib/supabase/auth-proveedor'
 import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    const prov = await getProveedorAutenticadoODev()
+    if (!prov) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
     const db = createServiceClient()
-
-    const { data: pRaw } = await db
-      .from('proveedores')
-      .select('id,razon_social,marcas,competidores')
-      .limit(1)
-      .single()
-    const prov = pRaw as any
-    if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
 
     const marcasPropias: string[] = prov.marcas ?? []
     const competidores: string[] = prov.competidores ?? []

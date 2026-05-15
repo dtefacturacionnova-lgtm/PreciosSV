@@ -17,6 +17,7 @@
  * All joins resolved manually in code.
  */
 import { createServiceClient } from '@/lib/supabase/service'
+import { getProveedorAutenticadoODev } from '@/lib/supabase/auth-proveedor'
 import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
@@ -30,16 +31,10 @@ const UMBRAL_DUMPING_PVP    = 0.60  // precio < 60% del pvp sugerido
 
 export async function GET() {
   try {
-    const db = createServiceClient()
-
     // ── 1. Proveedor ──────────────────────────────────────────────────────────
-    const { data: pRaw } = await db
-      .from('proveedores')
-      .select('id')
-      .limit(1)
-      .single()
-    const prov = pRaw as any
-    if (!prov) return NextResponse.json({ error: 'Proveedor no encontrado' }, { status: 404 })
+    const prov = await getProveedorAutenticadoODev()
+    if (!prov) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+    const db = createServiceClient()
 
     // ── 2. Todo el catálogo activo (enlazados y no enlazados) ─────────────────
     const { data: catalogoRaw } = await (db as any)

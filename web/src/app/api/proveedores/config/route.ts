@@ -3,20 +3,14 @@
  * PATCH /api/proveedores/config  body: { competidores: string[] }
  */
 import { createServiceClient } from '@/lib/supabase/service'
+import { getProveedorAutenticadoODev } from '@/lib/supabase/auth-proveedor'
 import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-async function getProveedor() {
-  const db = createServiceClient()
-  const { data: pRaw } = await db.from('proveedores').select('id,marcas,competidores').limit(1).single()
-  const p = pRaw as any
-  return p ?? null
-}
-
 // GET — devuelve configuración actual del proveedor
 export async function GET() {
-  const proveedor = await getProveedor()
+  const proveedor = await getProveedorAutenticadoODev()
   if (!proveedor) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
   return NextResponse.json({
@@ -26,7 +20,7 @@ export async function GET() {
 
 // PATCH — actualiza lista de marcas competidoras
 export async function PATCH(req: NextRequest) {
-  const proveedor = await getProveedor()
+  const proveedor = await getProveedorAutenticadoODev()
   if (!proveedor) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
 
   const body = await req.json()

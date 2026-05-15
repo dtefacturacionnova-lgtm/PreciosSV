@@ -1,12 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import {
   Package, Tag, Store, TrendingDown,
   RefreshCw, Building2, BarChart2, ShoppingBag,
-  ShieldCheck, LineChart, Lightbulb, BookOpen,
+  ShieldCheck, LineChart, Lightbulb, BookOpen, LogOut,
 } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
 import MetricaCard from '@/components/proveedores/MetricaCard'
 import TablaProductos from '@/components/proveedores/TablaProductos'
 import CumplimientoPrecios from '@/components/proveedores/CumplimientoPrecios'
@@ -161,6 +163,14 @@ export default function DashboardProveedorPage() {
   const [cargando, setCargando] = useState(true)
   const [error,    setError]    = useState<string | null>(null)
   const [tab,      setTab]      = useState<Tab>('catalogo')
+  const router = useRouter()
+
+  async function cerrarSesion() {
+    const supabase = createClient()
+    await supabase.auth.signOut()
+    router.push('/auth/login')
+    router.refresh()
+  }
 
   useEffect(() => {
     fetch('/api/proveedores/dashboard')
@@ -208,9 +218,19 @@ export default function DashboardProveedorPage() {
 
       {/* Header */}
       <div className="mb-6">
-        <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
-          <Building2 className="w-3.5 h-3.5" />
-          Panel de Proveedor
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <Building2 className="w-3.5 h-3.5" />
+            Panel de Proveedor
+          </div>
+          <button
+            onClick={cerrarSesion}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-500 transition-colors px-2.5 py-1.5 rounded-lg hover:bg-red-50"
+            title="Cerrar sesión"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Cerrar sesión</span>
+          </button>
         </div>
         <h1 className="text-2xl font-bold text-slate-900">{proveedor.razon_social}</h1>
         {proveedor.marcas.length > 0 && (
