@@ -198,27 +198,48 @@ async def _login(page) -> bool:
     """
     Autentica en Selectos via Playwright usando SELECTOS_EMAIL / SELECTOS_PASSWORD.
     Retorna True si el login fue exitoso.
+
+    Notas sobre el sitio:
+    - Selectos usa Radzen Blazor: el input de email se renderiza como type='text', no type='email'
+    - El botón de submit dice exactamente "Iniciar Sesión" (no "Ingresar" ni "Entrar")
+    - Se localiza el email buscando el input text visible justo antes del campo de contraseña en el DOM
     """
     try:
         print(f"  . Haciendo login como {SELECTOS_EMAIL}...")
         await page.evaluate("Blazor.navigateTo('/login')")
-        await asyncio.sleep(5)
 
-        # Buscar campos de email y contraseña
-        email_input = await page.query_selector("input[type='email'], input[placeholder*='orreo'], input[name*='email']")
-        pass_input  = await page.query_selector("input[type='password']")
+        # Esperar a que el formulario esté visible (el campo de contraseña es el indicador más fiable)
+        pass_input = None
+        for _ in range(15):
+            await asyncio.sleep(1)
+            el = await page.query_selector("input[type='password']")
+            if el and await el.is_visible():
+                pass_input = el
+                break
 
-        if not email_input or not pass_input:
-            # Intentar abrir el modal de login si existe
-            login_btn = await page.query_selector("a[href*='login'], button:has-text('Ingresar'), a:has-text('Iniciar')")
-            if login_btn:
-                await login_btn.click()
-                await asyncio.sleep(3)
-                email_input = await page.query_selector("input[type='email'], input[placeholder*='orreo']")
-                pass_input  = await page.query_selector("input[type='password']")
+        if not pass_input:
+            print("  WARN: No se encontró campo de contraseña en /login")
+            return False
 
-        if not email_input or not pass_input:
-            print("  WARN: No se encontraron campos de login")
+        # Radzen renderiza el campo email como type='text'.
+        # Buscar el input de texto visible inmediatamente anterior al password en el DOM.
+        email_handle = await page.evaluate_handle("""() => {
+            const passInput = document.querySelector("input[type='password']");
+            if (!passInput) return null;
+            const allInputs = Array.from(document.querySelectorAll("input"));
+            const passIdx   = allInputs.indexOf(passInput);
+            for (let i = passIdx - 1; i >= 0; i--) {
+                const inp = allInputs[i];
+                if ((inp.type === 'text' || inp.type === 'email') && inp.offsetParent !== null) {
+                    return inp;
+                }
+            }
+            return null;
+        }""")
+        email_input = email_handle.as_element()
+
+        if not email_input:
+            print("  WARN: No se encontró campo de email")
             return False
 
         await email_input.fill(SELECTOS_EMAIL)
@@ -226,30 +247,32 @@ async def _login(page) -> bool:
         await pass_input.fill(SELECTOS_PASSWORD)
         await asyncio.sleep(0.5)
 
-        # Enviar formulario
-        submit = await page.query_selector("button[type='submit'], button:has-text('Ingresar'), button:has-text('Entrar')")
+        # Botón submit — texto confirmado via DOM inspection: "Iniciar Sesión"
+        submit = await page.query_selector(
+            "button[type='submit'], button:has-text('Iniciar Sesión')"
+        )
         if submit:
             await submit.click()
         else:
             await pass_input.press("Enter")
 
-        await asyncio.sleep(6)
+        await asyncio.sleep(8)
 
-        # Verificar login exitoso buscando elemento de usuario autenticado
+        # Verificar login exitoso
         logged_in = await page.evaluate("""() => {
-            const body = document.body.innerText;
-            return body.includes('Mis productos') || body.includes('Cerrar sesión') ||
-                   body.includes('Mi cuenta') || document.querySelector('a[href*=\"/favorites\"]') !== null;
+            const t = document.body.innerText || '';
+            return t.includes('Mis productos') || t.includes('Cerrar sesión') ||
+                   t.includes('Cerrar Sesión') || t.includes('Mi cuenta') ||
+                   document.querySelector('a[href*="/favorites"]') !== null;
         }""")
 
         if logged_in:
             print("  . Login exitoso")
-            # Volver a la home para continuar
             await page.evaluate("Blazor.navigateTo('/')")
             await asyncio.sleep(5)
             return True
         else:
-            print("  WARN: Login no confirmado — continuando sin sesión")
+            print(f"  WARN: Login no confirmado (url={page.url}) — continuando sin sesión")
             return False
 
     except Exception as e:
