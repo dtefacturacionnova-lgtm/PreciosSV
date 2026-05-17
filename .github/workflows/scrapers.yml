@@ -2,38 +2,30 @@ name: Scrapers de Precios
 
 on:
   schedule:
-    # Cada 6 horas: 0:00, 6:00, 12:00, 18:00 hora El Salvador (UTC-6)
-    - cron: '0 6,12,18,0 * * *'
+    # 6am y 6pm hora El Salvador (UTC-6) = 12:00 y 00:00 UTC
+    - cron: '0 12,0 * * *'
   workflow_dispatch:
     inputs:
       supermercados:
-        description: 'Supermercados a ejecutar (vacío = todos)'
+        description: 'Supermercados VTEX a ejecutar (vacío = todos: walmart donjuan maxidespensa)'
         required: false
         default: ''
         type: string
+      incluir_selectos:
+        description: 'Incluir Selectos (Playwright)'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
-  scrape:
-    name: Ejecutar scrapers
+  scrape-vtex:
+    name: VTEX (Walmart / Don Juan / Maxi Despensa)
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     env:
-      DATABASE_URL:         ${{ secrets.DATABASE_URL }}
-      ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
-      GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
-      SENDGRID_API_KEY:     ${{ secrets.SENDGRID_API_KEY }}
-      APP_ENV:              production
-      DEBUG:                'false'
-      SCRAPER_HEADLESS:     'true'
-      SCRAPER_DELAY_SECONDS: '2'
-      SCRAPER_MAX_RETRIES:  '3'
-      SCRAPER_TIMEOUT_SECONDS: '45'
-      MATCHING_ENABLED:     'true'
-      # Redis no se usa en modo standalone — valores dummy
-      REDIS_URL:            redis://localhost:6379/0
-      CELERY_BROKER_URL:    redis://localhost:6379/1
-      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
       - name: Checkout código
@@ -45,22 +37,57 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Instalar dependencias Python
-        run: pip install -r requirements.txt
+      - name: Instalar dependencias
+        run: pip install httpx
 
-      - name: Instalar Playwright + Chromium
-        run: python -m playwright install --with-deps chromium
-
-      - name: Ejecutar scrapers
+      - name: Ejecutar scrapers VTEX
         run: |
           SUPERS="${{ github.event.inputs.supermercados }}"
           if [ -n "$SUPERS" ]; then
-            python scripts/run_scrapers_github.py $SUPERS
+            python scripts/scrape_vtex_rest.py $SUPERS
           else
-            python scripts/run_scrapers_github.py
+            python scripts/scrape_vtex_rest.py
           fi
 
-      - name: Notificar fallo (opcional)
-        if: failure()
+  scrape-selectos:
+    name: Selectos (Playwright)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.incluir_selectos == 'true' }}
+
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install httpx playwright
+
+      - name: Instalar Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Ejecutar scraper Selectos
+        run: python scripts/scrape_selectos_rest.py
+
+  notificar:
+    name: Notificar resultado
+    runs-on: ubuntu-22.04
+    needs: [scrape-vtex, scrape-selectos]
+    if: always()
+    steps:
+      - name: Resumen
         run: |
-          echo "::error::El scraping falló. Revisa los logs arriba."
+          echo "VTEX: ${{ needs.scrape-vtex.result }}"
+          echo "Selectos: ${{ needs.scrape-selectos.result }}"
+          if [[ "${{ needs.scrape-vtex.result }}" == "failure" || "${{ needs.scrape-selectos.result }}" == "failure" ]]; then
+            echo "::warning::Uno o más scrapers fallaron. Revisa los logs."
+          fi
