@@ -80,16 +80,45 @@ jobs:
       - name: Ejecutar scraper Selectos
         run: python scripts/scrape_selectos_rest.py
 
+  normalizar:
+    name: Normalización NLP cross-store
+    runs-on: ubuntu-22.04
+    needs: [scrape-vtex, scrape-selectos]
+    if: always() && (needs.scrape-vtex.result == 'success' || needs.scrape-selectos.result == 'success')
+    timeout-minutes: 15
+
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install httpx google-generativeai
+
+      - name: Ejecutar normalización NLP
+        run: python scripts/normalizar_productos.py
+
   notificar:
     name: Notificar resultado
     runs-on: ubuntu-22.04
-    needs: [scrape-vtex, scrape-selectos]
+    needs: [scrape-vtex, scrape-selectos, normalizar]
     if: always()
     steps:
       - name: Resumen
         run: |
-          echo "VTEX: ${{ needs.scrape-vtex.result }}"
-          echo "Selectos: ${{ needs.scrape-selectos.result }}"
+          echo "VTEX:          ${{ needs.scrape-vtex.result }}"
+          echo "Selectos:      ${{ needs.scrape-selectos.result }}"
+          echo "Normalización: ${{ needs.normalizar.result }}"
           if [[ "${{ needs.scrape-vtex.result }}" == "failure" || "${{ needs.scrape-selectos.result }}" == "failure" ]]; then
             echo "::warning::Uno o más scrapers fallaron. Revisa los logs."
           fi

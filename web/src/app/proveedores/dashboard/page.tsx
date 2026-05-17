@@ -6,7 +6,7 @@ import Link from 'next/link'
 import {
   Package, Tag, Store, TrendingDown,
   RefreshCw, Building2, BarChart2, ShoppingBag,
-  ShieldCheck, LineChart, Lightbulb, BookOpen, LogOut,
+  ShieldCheck, LineChart, Lightbulb, BookOpen, LogOut, Swords,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import MetricaCard from '@/components/proveedores/MetricaCard'
@@ -15,6 +15,7 @@ import CumplimientoPrecios from '@/components/proveedores/CumplimientoPrecios'
 import InteligenciaMercado from '@/components/proveedores/InteligenciaMercado'
 import RecomendacionesPrecio from '@/components/proveedores/RecomendacionesPrecio'
 import MiCatalogo from '@/components/proveedores/MiCatalogo'
+import SimuladorPrecios from '@/components/proveedores/SimuladorPrecios'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ interface DashboardData {
   tabla:     any[]
 }
 
-type Tab = 'catalogo' | 'cumplimiento' | 'mercado' | 'recomendaciones' | 'micatalogo'
+type Tab = 'catalogo' | 'cumplimiento' | 'mercado' | 'recomendaciones' | 'micatalogo' | 'simulador'
 
 // ─── Sub-componente: barra de cobertura ──────────────────────────────────────
 
@@ -206,11 +207,12 @@ export default function DashboardProveedorPage() {
 
   // ── Tabs config ────────────────────────────────────────────────
   const TABS: { id: Tab; label: string; icon: typeof ShoppingBag; desc: string }[] = [
-    { id: 'micatalogo',       label: 'Mi Catálogo',             icon: BookOpen,     desc: 'Registra tus productos con EAN y mapea competidores equivalentes' },
-    { id: 'catalogo',         label: 'Mercado',                 icon: ShoppingBag,  desc: 'Precios actuales de tus marcas en supermercados' },
-    { id: 'cumplimiento',     label: 'Cumplimiento PVP',        icon: ShieldCheck,  desc: 'Verifica que los supers respeten tu precio sugerido' },
-    { id: 'mercado',          label: 'Inteligencia',            icon: LineChart,     desc: 'Compara tus marcas vs. competidores' },
-    { id: 'recomendaciones',  label: 'Recomendaciones',         icon: Lightbulb,    desc: 'Recomendaciones inteligentes de pricing basadas en el mercado' },
+    { id: 'micatalogo',       label: 'Mi Catálogo',    icon: BookOpen,    desc: 'Registra tus productos con EAN y mapea competidores equivalentes' },
+    { id: 'catalogo',         label: 'Mercado',        icon: ShoppingBag, desc: 'Precios actuales de tus marcas en supermercados' },
+    { id: 'cumplimiento',     label: 'Cumplimiento',   icon: ShieldCheck, desc: 'Verifica que los supers respeten tu precio sugerido' },
+    { id: 'mercado',          label: 'Inteligencia',   icon: LineChart,   desc: 'Compara tus marcas vs. competidores' },
+    { id: 'recomendaciones',  label: 'Recomendaciones',icon: Lightbulb,   desc: 'Recomendaciones inteligentes de pricing basadas en el mercado' },
+    { id: 'simulador',        label: 'Simulador',      icon: Swords,      desc: 'Simula escenarios de precio y su impacto en el mercado' },
   ]
 
   return (
@@ -312,6 +314,7 @@ export default function DashboardProveedorPage() {
       {tab === 'cumplimiento'    && <CumplimientoPrecios />}
       {tab === 'mercado'         && <InteligenciaMercado />}
       {tab === 'recomendaciones' && <RecomendacionesPrecio />}
+      {tab === 'simulador'       && <SimuladorPrecios />}
 
     </div>
   )
