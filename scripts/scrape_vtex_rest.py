@@ -4,8 +4,11 @@ Scraper VTEX standalone que guarda directamente en Supabase via REST API.
 No requiere PostgreSQL directo ni SQLAlchemy — usa el service role key.
 
 Uso:
-  python scripts/scrape_vtex_rest.py [walmart] [donjuan] [maxidespensa] [familiar]
-  python scripts/scrape_vtex_rest.py          # todos
+  python scripts/scrape_vtex_rest.py [walmart] [donjuan] [maxidespensa]
+  python scripts/scrape_vtex_rest.py          # todos (walmart + donjuan + maxidespensa)
+
+Nota: Despensa Familiar (familiar) no tiene tienda VTEX propia en .sv —
+      opera bajo la misma plataforma que Maxi Despensa.
 
 Requiere variables de entorno (o web/.env.local):
   NEXT_PUBLIC_SUPABASE_URL
@@ -17,6 +20,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from decimal import Decimal
+
+# Forzar stdout a utf-8 en Windows (evita UnicodeEncodeError con caracteres especiales)
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 # ── Cargar .env.local del proyecto web ───────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -53,7 +61,7 @@ TIENDAS_VTEX = {
     "walmart":      {"base_url": "https://www.walmart.com.sv"},
     "donjuan":      {"base_url": "https://www.ladespensadedonjuan.com.sv"},
     "maxidespensa": {"base_url": "https://www.maxidespensa.com.sv"},
-    "familiar":     {"base_url": "https://www.despensafamiliar.com.sv"},
+    # "familiar" — no tiene tienda VTEX propia; opera bajo Maxi Despensa
 }
 
 VTEX_HEADERS = {
@@ -64,9 +72,10 @@ VTEX_HEADERS = {
 
 
 async def scrape_vtex(key: str) -> list[dict]:
-    """Scrape VTEX para una tienda dada. Devuelve lista de productos raw."""
+    """Scrape VTEX para una tienda dada. Devuelve lista de productos raw (sin duplicados por sku_local)."""
     base = TIENDAS_VTEX[key]["base_url"]
-    productos = []
+    productos: list[dict] = []
+    skus_vistos: set[str] = set()
     page_size = 50
     desde = 0
 
@@ -79,7 +88,7 @@ async def scrape_vtex(key: str) -> list[dict]:
                 resp.raise_for_status()
                 items = resp.json()
             except Exception as e:
-                print(f"  ⚠ Error en página {desde}: {e}")
+                print(f"  WARN: Error en página {desde}: {e}")
                 break
 
             if not items:
@@ -87,16 +96,17 @@ async def scrape_vtex(key: str) -> list[dict]:
 
             for item in items:
                 p = _parsear(item, key, base)
-                if p:
+                if p and p["sku_local"] not in skus_vistos:
+                    skus_vistos.add(p["sku_local"])
                     productos.append(p)
 
-            print(f"  · {key}: {len(productos)} productos scrapeados (página {desde//page_size + 1})")
+            print(f"  . {key}: {len(productos)} únicos (página {desde//page_size + 1})")
             desde += page_size
             await asyncio.sleep(1.0)
 
-            # Límite de seguridad: 2000 productos por tienda en primera corrida
-            if len(productos) >= 2000:
-                print(f"  · {key}: límite de 2000 productos alcanzado")
+            # Límite de seguridad: 3000 productos únicos por tienda
+            if len(productos) >= 3000:
+                print(f"  . {key}: límite de 3000 alcanzado")
                 break
 
     return productos
@@ -384,18 +394,18 @@ async def main():
         totales = {"nuevos": 0, "actualizados": 0, "errores": 0}
 
         for key in keys:
-            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scrapeando {key}…")
+            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scrapeando {key}...")
             try:
                 productos = await scrape_vtex(key)
-                print(f"  → {len(productos)} productos obtenidos de VTEX")
+                print(f"  -> {len(productos)} productos obtenidos de VTEX")
 
                 if productos:
                     resumen = await guardar_productos(client, productos, super_map)
-                    print(f"  → BD: +{resumen['nuevos']} nuevos, ~{resumen['actualizados']} actualizados, {resumen['errores']} errores")
+                    print(f"  -> BD: +{resumen['nuevos']} nuevos, ~{resumen['actualizados']} actualizados, {resumen['errores']} errores")
                     for k in totales:
                         totales[k] += resumen[k]
             except Exception as e:
-                print(f"  ✗ Error en {key}: {e}")
+                print(f"  ERROR en {key}: {e}")
 
         print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Refrescando vista materializada…")
         await refrescar_vista(client)
