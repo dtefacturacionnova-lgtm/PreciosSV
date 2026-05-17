@@ -13,14 +13,19 @@ Requiere variables de entorno (o web/.env.local):
 Requiere:
   pip install playwright httpx
   python -m playwright install chromium
+
+Estrategia:
+  El sitio usa Blazor Server (binario SignalR) — no hay REST API pública.
+  Se usa Playwright para navegar via Blazor.navigateTo('/products?category=XXXX')
+  y extraer productos del DOM renderizado (.producto-box).
+  Un crawler recorre el árbol de categorías descubriendo sub-categorías.
 """
 import asyncio
-import json
 import os
 import sys
 import io
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
 import unicodedata
@@ -61,25 +66,30 @@ HEADERS_MIN    = {**HEADERS, "Prefer": "return=minimal"}
 HEADERS_UPSERT = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"}
 
 BASE_URL = "https://www.superselectos.com"
-
-CATEGORIAS_SELECTOS = [
-    "Abarrotes",
-    "Lacteos-y-Huevos",
-    "Bebidas",
-    "Carnes-y-Mariscos",
-    "Frutas-y-Verduras",
-    "Limpieza-del-Hogar",
-    "Cuidado-Personal",
-    "Panaderia-y-Tortilleria",
-    "Congelados",
-    "Bebes-y-Ninos",
-]
-
 SUPERMERCADO_KEY = "selectos"
 CHUNK = 200
 
+# Categorías raíz conocidas — se descubren más durante el crawl
+CATEGORIAS_RAIZ = [
+    "0101",    # Abarrotes
+    "0201",    # Bebidas
+    "0301",    # Lácteos y Huevos
+    "0401",    # Carnes y Mariscos
+    "0501",    # Frutas y Verduras
+    "0601",    # Limpieza
+    "0701",    # Cuidado Personal
+    "0801",    # Panadería
+    "0901",    # Congelados
+    "1001",    # Bebés y Niños
+    "1101",    # Mascotas
+    # Adicionalmente las que aparecen en el DOM
+    "03695",
+    "01634",
+    "042159",
+]
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+
+# ── Helpers de texto ──────────────────────────────────────────────────────────
 
 def normalizar_nombre(nombre: str) -> str:
     s = unicodedata.normalize("NFKD", nombre.lower())
@@ -88,215 +98,103 @@ def normalizar_nombre(nombre: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _parece_producto(item: dict) -> bool:
-    tiene_precio = any(k in item for k in (
-        "Price", "precio", "price", "ListPrice", "PriceWithDiscount",
-        "priceRange", "spotPrice",
-    )) or (
-        "items" in item and isinstance(item.get("items"), list) and bool(item["items"])
-    )
-    tiene_nombre = any(k in item for k in (
-        "ProductName", "productName", "nombre", "name", "Name", "Title",
-    ))
-    return tiene_precio and tiene_nombre
-
-
-def _parsear_producto(item: dict) -> Optional[dict]:
-    try:
-        nested_items = item.get("items") or item.get("Items") or []
-        sku_nested: dict = (
-            nested_items[0]
-            if nested_items and isinstance(nested_items, list) and isinstance(nested_items[0], dict)
-            else {}
-        )
-
-        nombre = (
-            item.get("productName") or item.get("ProductName")
-            or item.get("Name") or item.get("nombre") or item.get("name")
-            or sku_nested.get("nameComplete") or ""
-        ).strip()
-        if not nombre:
-            return None
-
-        sellers_nested = sku_nested.get("sellers") or []
-        offer_nested: dict = (
-            sellers_nested[0].get("commertialOffer", {})
-            if sellers_nested and isinstance(sellers_nested[0], dict)
-            else {}
-        )
-
-        precio_normal_raw = (
-            offer_nested.get("ListPrice") or offer_nested.get("Price")
-            or item.get("ListPrice") or item.get("PriceWithoutDiscount")
-            or item.get("Price") or item.get("precio") or 0
-        )
-        precio_normal = Decimal(str(precio_normal_raw))
-
-        precio_oferta_raw = (
-            offer_nested.get("Price") if offer_nested.get("Price") and
-                Decimal(str(offer_nested.get("Price", 0))) < precio_normal else None
-        ) or item.get("PriceWithDiscount") or item.get("SalePrice") or item.get("precioOferta")
-        precio_oferta = Decimal(str(precio_oferta_raw)) if precio_oferta_raw else None
-
-        if precio_oferta and precio_oferta >= precio_normal:
-            precio_oferta = None
-        if precio_normal <= 0:
-            return None
-
-        en_oferta = precio_oferta is not None
-        descuento_pct = None
-        if en_oferta and precio_normal > 0:
-            descuento_pct = round(float((precio_normal - precio_oferta) / precio_normal * 100), 2)
-
-        ean = (
-            item.get("EAN") or item.get("ean")
-            or sku_nested.get("ean") or sku_nested.get("EAN") or None
-        )
-        if not ean:
-            for ref in (sku_nested.get("referenceId") or []):
-                if isinstance(ref, dict):
-                    k = ref.get("Key", "").upper()
-                    if k in ("EAN", "GTIN", "EAN13", "BARCODE"):
-                        v = str(ref.get("Value", "")).strip()
-                        if v:
-                            ean = v
-                            break
-
-        sku = str(
-            item.get("productId") or item.get("ProductId")
-            or item.get("Id") or item.get("id")
-            or sku_nested.get("itemId") or ""
-        )
-
-        imagenes_nested = sku_nested.get("images") or []
-        imagen_url = (
-            (imagenes_nested[0].get("imageUrl") if imagenes_nested else None)
-            or item.get("ImageUrl") or item.get("imagen") or item.get("image")
-        )
-
-        link_text = item.get("linkText") or item.get("LinkText") or item.get("slug") or ""
-        url_producto = f"{BASE_URL}/{link_text}/p" if link_text else BASE_URL
-
-        marca = (
-            item.get("brand") or item.get("BrandName") or item.get("Brand")
-            or item.get("marca") or ""
-        ).strip() or None
-
-        disponible = (
-            offer_nested.get("IsAvailable", True)
-            if offer_nested else item.get("IsAvailable", True)
-        )
-
-        cat_raw = item.get("categories") or []
-        categoria_nombre = cat_raw[0] if cat_raw else (
-            item.get("CategoryName") or item.get("categoria") or None
-        )
-
-        return {
-            "nombre_local":     nombre,
-            "nombre_norm":      normalizar_nombre(nombre),
-            "marca":            marca,
-            "sku_local":        sku,
-            "ean":              ean,
-            "precio_normal":    float(precio_normal),
-            "precio_oferta":    float(precio_oferta) if precio_oferta else None,
-            "en_oferta":        en_oferta,
-            "descuento_pct":    descuento_pct,
-            "descripcion":      (item.get("Description") or item.get("description") or "").strip() or None,
-            "imagen_url":       imagen_url,
-            "url_producto":     url_producto,
-            "disponible":       disponible,
-            "condicion_oferta": item.get("PromotionName") or item.get("condicion") or None,
-            "categoria_nombre": categoria_nombre,
-        }
-    except Exception:
-        return None
-
-
-# ── Playwright scraper — extracción DOM ──────────────────────────────────────
-# El sitio de Selectos usa Blazor Server + SignalR (WebSocket), no REST/JSON.
-# Los datos llegan como HTML renderizado server-side. Se extrae directo del DOM.
+# ── JavaScript para extraer productos del DOM ─────────────────────────────────
 
 JS_EXTRAER_PRODUCTOS = """
 () => {
     const boxes = document.querySelectorAll('.producto-box');
     return Array.from(boxes).map(box => {
-        // Nombre
         const linkEl = box.querySelector('h5.prod-nombre a') || box.querySelector('a.clickeable');
         const nombre = linkEl ? linkEl.innerText.trim() : '';
-        const href   = linkEl ? linkEl.getAttribute('href') : '';
+        const href   = linkEl ? (linkEl.getAttribute('href') || '') : '';
 
-        // SKU / productId desde URL
-        const m = href ? href.match(/productId=([\\d]+)/) : null;
+        const m = href.match(/productId=([\\d]+)/);
         const productId = m ? m[1] : '';
 
-        // Precios
-        const precioEl       = box.querySelector('strong.precio');
-        const precioOfertaEl = box.querySelector('.precio-oferta') || box.querySelector('.precio-tachado');
-        const precio_raw     = precioEl ? precioEl.innerText.replace('$','').trim() : '';
-        const oferta_raw     = precioOfertaEl ? precioOfertaEl.innerText.replace('$','').trim() : '';
+        const precioEl    = box.querySelector('strong.precio');
+        const ofertaEl    = box.querySelector('.precio-oferta, .precio-tachado, .precio-anterior');
+        const precio_raw  = precioEl ? precioEl.innerText.replace(/[^0-9.]/g,'').trim() : '';
+        const oferta_raw  = ofertaEl ? ofertaEl.innerText.replace(/[^0-9.]/g,'').trim() : '';
 
-        // Imagen
-        const imgEl    = box.querySelector('img');
+        const imgEl     = box.querySelector('img');
         const imagenUrl = imgEl ? imgEl.src : '';
 
-        // En oferta — buscar viñeta de descuento
-        const tieneOferta = box.querySelector('[class*="oferta"]') !== null
-                         || box.querySelector('[class*="descuento"]') !== null;
+        const enOferta = box.querySelector('[class*="oferta"],[class*="descuento"]') !== null;
 
-        return {
-            nombre, productId, precio_raw, oferta_raw, imagenUrl,
-            url: href ? ('https://www.superselectos.com' + (href.startsWith('/') ? '' : '/') + href.replace('https://www.superselectos.com','')) : '',
-            tieneOferta,
-        };
+        const catLinks = Array.from(box.closest('body').querySelectorAll('a[href*="category="]'))
+                         .map(a => a.getAttribute('href'))
+                         .filter(h => h && h.includes('category='));
+
+        return {nombre, productId, precio_raw, oferta_raw, imagenUrl, href, enOferta, catLinks};
     }).filter(p => p.nombre && p.productId && p.precio_raw);
 }
 """
 
+JS_EXTRAER_CAT_LINKS = """
+() => {
+    return Array.from(document.querySelectorAll('a[href*="category="]'))
+           .map(a => a.getAttribute('href'))
+           .filter((h, i, arr) => h && arr.indexOf(h) === i)
+           .map(h => {
+               const m = h.match(/category=([\\w]+)/);
+               return m ? m[1] : null;
+           })
+           .filter(Boolean);
+}
+"""
+
+
+def _parsear(raw: dict) -> Optional[dict]:
+    try:
+        nombre = raw["nombre"].strip()
+        if not nombre:
+            return None
+        precio_normal = Decimal(raw["precio_raw"])
+        if precio_normal <= 0:
+            return None
+        precio_oferta = None
+        if raw.get("oferta_raw"):
+            try:
+                v = Decimal(raw["oferta_raw"])
+                if 0 < v < precio_normal:
+                    precio_oferta = v
+            except InvalidOperation:
+                pass
+        en_oferta = precio_oferta is not None or raw.get("enOferta", False)
+        descuento_pct = None
+        if precio_oferta:
+            descuento_pct = round(float((precio_normal - precio_oferta) / precio_normal * 100), 2)
+
+        url = raw.get("href", "")
+        if not url.startswith("http"):
+            url = BASE_URL + ("" if url.startswith("/") else "/") + url
+
+        return {
+            "nombre_local":  nombre,
+            "nombre_norm":   normalizar_nombre(nombre),
+            "marca":         None,
+            "sku_local":     raw["productId"],
+            "ean":           None,
+            "precio_normal": float(precio_normal),
+            "precio_oferta": float(precio_oferta) if precio_oferta else None,
+            "en_oferta":     en_oferta,
+            "descuento_pct": descuento_pct,
+            "descripcion":   None,
+            "imagen_url":    raw.get("imagenUrl") or None,
+            "url_producto":  url or BASE_URL,
+            "condicion_oferta": None,
+        }
+    except (InvalidOperation, Exception):
+        return None
+
+
+# ── Playwright crawler ────────────────────────────────────────────────────────
 
 async def scrape_selectos() -> list[dict]:
     productos_raw: list[dict] = []
-    skus_vistos: set[str] = set()
-
-    def _convertir(raw: dict) -> Optional[dict]:
-        try:
-            nombre = raw["nombre"].strip()
-            if not nombre:
-                return None
-            precio_normal = Decimal(raw["precio_raw"].replace(",", ""))
-            if precio_normal <= 0:
-                return None
-            precio_oferta = None
-            if raw.get("oferta_raw"):
-                try:
-                    v = Decimal(raw["oferta_raw"].replace(",", ""))
-                    if 0 < v < precio_normal:
-                        precio_oferta = v
-                except Exception:
-                    pass
-            en_oferta    = precio_oferta is not None or raw.get("tieneOferta", False)
-            descuento_pct = None
-            if precio_oferta:
-                descuento_pct = round(float((precio_normal - precio_oferta) / precio_normal * 100), 2)
-            return {
-                "nombre_local":     nombre,
-                "nombre_norm":      normalizar_nombre(nombre),
-                "marca":            None,
-                "sku_local":        raw["productId"],
-                "ean":              None,
-                "precio_normal":    float(precio_normal),
-                "precio_oferta":    float(precio_oferta) if precio_oferta else None,
-                "en_oferta":        en_oferta,
-                "descuento_pct":    descuento_pct,
-                "descripcion":      None,
-                "imagen_url":       raw.get("imagenUrl") or None,
-                "url_producto":     raw.get("url") or BASE_URL,
-                "disponible":       True,
-                "condicion_oferta": None,
-                "categoria_nombre": None,
-            }
-        except Exception:
-            return None
+    skus_vistos:   set[str]   = set()
+    cats_visitadas: set[str]  = set()
+    cats_pendientes: list[str] = list(CATEGORIAS_RAIZ)
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -308,87 +206,99 @@ async def scrape_selectos() -> list[dict]:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ),
-            viewport={"width": 1280, "height": 900},
+            viewport={"width": 1920, "height": 1080},
             locale="es-SV",
         )
         page = await context.new_page()
 
-        # Inicializar Blazor cargando la home primero para que el router funcione
+        # Inicializar Blazor en la home
         print("  . Inicializando Blazor...")
-        await page.goto(f"{BASE_URL}/Tienda", wait_until="load", timeout=90_000)
-        await asyncio.sleep(8)
+        await page.goto(f"{BASE_URL}/", wait_until="load", timeout=90_000)
+        await asyncio.sleep(10)
 
-        for i, categoria in enumerate(CATEGORIAS_SELECTOS, 1):
-            url_cat = f"{BASE_URL}/Tienda/Catalogo/{categoria}"
-            print(f"  . [{i}/{len(CATEGORIAS_SELECTOS)}] {categoria} ({len(productos_raw)} total)")
+        while cats_pendientes:
+            cat_id = cats_pendientes.pop(0)
+            if cat_id in cats_visitadas:
+                continue
+            cats_visitadas.add(cat_id)
+
+            url_cat = f"/products?category={cat_id}"
             try:
-                # Usar goto con referer para que Blazor haga enhanced navigation
-                await page.goto(url_cat, wait_until="load", timeout=90_000, referer=f"{BASE_URL}/Tienda")
-                await asyncio.sleep(9)   # Blazor + SignalR necesita tiempo extra
-
-                # Scroll incremental para activar lazy-loading
-                paso = 600
-                y = 0
-                sin_cambio = 0
-                prev_count = -1
-                while sin_cambio < 3:
-                    y += paso
-                    await page.evaluate(f"window.scrollTo(0, {y})")
-                    await asyncio.sleep(1.2)
-                    altura = await page.evaluate("document.body.scrollHeight")
-                    curr_count = await page.evaluate("document.querySelectorAll('.producto-box').length")
-                    if curr_count == prev_count:
-                        sin_cambio += 1
-                    else:
-                        sin_cambio = 0
-                    prev_count = curr_count
-                    if y >= altura:
+                await page.evaluate(f"Blazor.navigateTo('{url_cat}')")
+                # Esperar a que los productos aparezcan
+                await asyncio.sleep(3)
+                for _ in range(20):
+                    n = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
+                    nombres_ok = await page.evaluate(
+                        "() => document.querySelectorAll('.producto-box h5.prod-nombre a').length"
+                    )
+                    if nombres_ok > 0:
                         break
+                    await asyncio.sleep(1.5)
                 await asyncio.sleep(2)
 
-                # Extraer productos del DOM
+                # Scroll para cargar más
+                prev_count = -1
+                for _ in range(15):
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(1.5)
+                    curr = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
+                    if curr == prev_count:
+                        break
+                    prev_count = curr
+
+                # Extraer productos
                 raws = await page.evaluate(JS_EXTRAER_PRODUCTOS)
-                nuevos_cat = 0
+                nuevos = 0
                 for raw in raws:
-                    if raw["productId"] not in skus_vistos:
-                        p = _convertir(raw)
+                    pid = raw.get("productId", "")
+                    if pid and pid not in skus_vistos:
+                        p = _parsear(raw)
                         if p:
-                            skus_vistos.add(raw["productId"])
+                            skus_vistos.add(pid)
                             productos_raw.append(p)
-                            nuevos_cat += 1
-                print(f"    -> {nuevos_cat} nuevos en {categoria} ({curr_count} boxes en DOM)")
+                            nuevos += 1
+
+                # Descubrir sub-categorías
+                new_cats = await page.evaluate(JS_EXTRAER_CAT_LINKS)
+                agregadas = 0
+                for nc in new_cats:
+                    if nc not in cats_visitadas and nc not in cats_pendientes:
+                        cats_pendientes.append(nc)
+                        agregadas += 1
+
+                n_total = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
+                print(f"  . cat={cat_id:10s} | +{nuevos:3d} nuevos | {n_total:3d} DOM | "
+                      f"pending={len(cats_pendientes)} | total={len(productos_raw)}")
 
             except Exception as e:
-                print(f"  WARN: Error en categoria {categoria}: {e}")
+                print(f"  WARN: Error en categoria {cat_id}: {str(e)[:80]}")
 
         await browser.close()
 
-    print(f"  -> {len(productos_raw)} productos unicos obtenidos de Selectos")
+    print(f"\n  -> {len(productos_raw)} productos unicos | {len(cats_visitadas)} categorias visitadas")
     return productos_raw
 
 
 # ── Supabase helpers ──────────────────────────────────────────────────────────
 
 async def cargar_supermercados(client: httpx.AsyncClient) -> dict[str, int]:
-    r = await client.get(f"{REST_URL}/supermercados", params={"select": "id,nombre_corto"}, headers=HEADERS)
+    r = await client.get(f"{REST_URL}/supermercados",
+                         params={"select": "id,nombre_corto"}, headers=HEADERS)
     r.raise_for_status()
     return {row["nombre_corto"]: row["id"] for row in r.json()}
 
 
 async def precargar_variantes(client: httpx.AsyncClient, super_id: int) -> tuple[dict, dict]:
-    """Retorna (sku_local -> variante_id, ean_cache -> producto_id)"""
     sku_map: dict[str, int] = {}
     ean_map: dict[str, int] = {}
     offset = 0
     while True:
         r = await client.get(
             f"{REST_URL}/producto_variantes",
-            params={
-                "select":            "id,sku_local,producto_id,productos(ean)",
-                "supermercado_id":   f"eq.{super_id}",
-                "limit":             str(CHUNK),
-                "offset":            str(offset),
-            },
+            params={"select": "id,sku_local,producto_id,productos(ean)",
+                    "supermercado_id": f"eq.{super_id}",
+                    "limit": str(CHUNK), "offset": str(offset)},
             headers=HEADERS,
         )
         r.raise_for_status()
@@ -407,7 +317,6 @@ async def precargar_variantes(client: httpx.AsyncClient, super_id: int) -> tuple
 
 
 async def precargar_nombres(client: httpx.AsyncClient) -> dict[str, int]:
-    """nombre_norm -> producto_id"""
     nombre_map: dict[str, int] = {}
     offset = 0
     while True:
@@ -429,20 +338,17 @@ async def precargar_nombres(client: httpx.AsyncClient) -> dict[str, int]:
     return nombre_map
 
 
-async def guardar_en_supabase(productos_raw: list[dict], super_id: int, client: httpx.AsyncClient) -> dict:
-    print("  -> Pre-cargando cache de variantes y productos existentes...")
+async def guardar_en_supabase(productos: list[dict], super_id: int, client: httpx.AsyncClient) -> dict:
+    print("  -> Pre-cargando cache...")
     sku_map, ean_map = await precargar_variantes(client, super_id)
     nombre_map = await precargar_nombres(client)
 
-    nuevos       = 0
-    actualizados = 0
-    errores      = 0
-    ahora        = datetime.now(timezone.utc).isoformat()
+    nuevos = actualizados = errores = 0
+    ahora = datetime.now(timezone.utc).isoformat()
     precios_batch: list[dict] = []
 
-    for prod in productos_raw:
+    for prod in productos:
         try:
-            # 1. Resolver producto_id
             producto_id: Optional[int] = None
             ean = prod.get("ean")
             if ean and ean in ean_map:
@@ -452,7 +358,6 @@ async def guardar_en_supabase(productos_raw: list[dict], super_id: int, client: 
                 if nn and nn in nombre_map:
                     producto_id = nombre_map[nn]
 
-            # 2. Insertar producto nuevo si no existe
             if not producto_id:
                 body = {
                     "nombre":             prod["nombre_local"],
@@ -476,7 +381,6 @@ async def guardar_en_supabase(productos_raw: list[dict], super_id: int, client: 
             else:
                 actualizados += 1
 
-            # 3. Upsert variante
             sku = prod.get("sku_local") or f"sel_{prod['nombre_norm'][:40]}"
             var_body = {
                 "producto_id":     producto_id,
@@ -485,22 +389,20 @@ async def guardar_en_supabase(productos_raw: list[dict], super_id: int, client: 
                 "nombre_local":    prod["nombre_local"],
                 "url_producto":    prod.get("url_producto"),
                 "imagen_url":      prod.get("imagen_url"),
-                # "disponible" no existe en producto_variantes — va en precios
             }
             r = await client.post(
                 f"{REST_URL}/producto_variantes",
                 json=var_body,
                 headers=HEADERS_UPSERT,
-                params={"on_conflict": "supermercado_id,sku_local"}
+                params={"on_conflict": "supermercado_id,sku_local"},
             )
             if r.status_code not in (200, 201):
-                print(f"  WARN: variante error {r.status_code}: {r.text[:150]}")
+                print(f"  WARN: variante error {r.status_code}: {r.text[:100]}")
                 errores += 1
                 continue
             var_rows = r.json()
             variante_id = var_rows[0]["id"] if isinstance(var_rows, list) else var_rows["id"]
 
-            # 4. Acumular precio
             precios_batch.append({
                 "variante_id":      variante_id,
                 "precio_normal":    prod["precio_normal"],
@@ -508,67 +410,64 @@ async def guardar_en_supabase(productos_raw: list[dict], super_id: int, client: 
                 "en_oferta":        prod.get("en_oferta", False),
                 "descuento_pct":    prod.get("descuento_pct"),
                 "condicion_oferta": prod.get("condicion_oferta"),
-                "disponible":       prod.get("disponible", True),
+                "disponible":       True,
                 "fecha_hora":       ahora,
             })
 
         except Exception as e:
             errores += 1
-            print(f"  WARN: error procesando producto: {e}")
+            print(f"  WARN: error prod: {e}")
 
-    # 5. Insertar precios en lotes
-    print(f"  -> Insertando {len(precios_batch)} precios en lotes de {CHUNK}...")
+    print(f"  -> Insertando {len(precios_batch)} precios...")
     for i in range(0, len(precios_batch), CHUNK):
-        chunk = precios_batch[i:i + CHUNK]
-        r = await client.post(f"{REST_URL}/precios", json=chunk, headers=HEADERS_MIN)
+        r = await client.post(f"{REST_URL}/precios",
+                              json=precios_batch[i:i+CHUNK], headers=HEADERS_MIN)
         if r.status_code not in (200, 201):
-            print(f"  WARN: error insertando lote de precios: {r.status_code}")
+            print(f"  WARN: precios error {r.status_code}")
 
     return {"nuevos": nuevos, "actualizados": actualizados, "errores": errores}
 
 
 async def refrescar_vista(client: httpx.AsyncClient) -> None:
-    print("  -> Refrescando vista materializada...")
-    r = await client.post(f"{SUPABASE_URL}/rest/v1/rpc/refrescar_precios_actuales", json={}, headers=HEADERS)
+    r = await client.post(f"{SUPABASE_URL}/rest/v1/rpc/refrescar_precios_actuales",
+                          json={}, headers=HEADERS)
     if r.status_code in (200, 204):
         print("  -> Vista 'precios_actuales' refrescada")
     else:
-        print(f"  WARN: No se pudo refrescar la vista: {r.status_code} {r.text[:100]}")
+        print(f"  WARN: vista error {r.status_code}: {r.text[:80]}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    print(f"\n=== PreciosSV Selectos Scraper (Playwright+REST) - {now_utc} ===")
+    print(f"\n=== PreciosSV Selectos Scraper - {now_utc} ===")
     print(f"Supabase: {SUPABASE_URL}\n")
 
-    # NO default headers en el cliente — pasarlos explícitamente en cada request
-    # para evitar conflictos con el header Prefer en upserts
     async with httpx.AsyncClient(timeout=30) as client:
         supermercados = await cargar_supermercados(client)
-        print(f"Supermercados en BD: {supermercados}")
+        print(f"Supermercados: {supermercados}")
 
         super_id = supermercados.get(SUPERMERCADO_KEY)
         if not super_id:
-            print(f"ERROR: supermercado '{SUPERMERCADO_KEY}' no encontrado en BD")
+            print(f"ERROR: '{SUPERMERCADO_KEY}' no encontrado")
             sys.exit(1)
 
-        print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scrapeando {SUPERMERCADO_KEY}...")
-        productos_raw = await scrape_selectos()
+        print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scrapeando Selectos...")
+        productos = await scrape_selectos()
 
-        if not productos_raw:
-            print("  -> Sin productos obtenidos. Revisar conectividad o estructura del sitio.")
+        if not productos:
+            print("  -> Sin productos. Revisar conectividad.")
             return
 
         print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Guardando en Supabase...")
-        resumen = await guardar_en_supabase(productos_raw, super_id, client)
+        resumen = await guardar_en_supabase(productos, super_id, client)
+        print(f"  -> +{resumen['nuevos']} nuevos, ~{resumen['actualizados']} actualizados, {resumen['errores']} errores")
 
-        print(f"  -> BD: +{resumen['nuevos']} nuevos, ~{resumen['actualizados']} actualizados, {resumen['errores']} errores")
-
+        print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Refrescando vista...")
         await refrescar_vista(client)
 
-    print(f"\n=== Resumen final ===")
+    print(f"\n=== Resumen ===")
     print(f"  Nuevos:       {resumen['nuevos']}")
     print(f"  Actualizados: {resumen['actualizados']}")
     print(f"  Errores:      {resumen['errores']}")
