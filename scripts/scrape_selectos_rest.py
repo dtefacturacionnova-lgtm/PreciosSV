@@ -9,6 +9,8 @@ Uso:
 Requiere variables de entorno (o web/.env.local):
   NEXT_PUBLIC_SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
+  SELECTOS_EMAIL      (opcional — para autenticación y catálogo completo)
+  SELECTOS_PASSWORD   (opcional)
 
 Requiere:
   pip install playwright httpx
@@ -45,8 +47,10 @@ if env_local.exists():
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip())
 
-SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "").rstrip("/")
-SERVICE_KEY  = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_URL      = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "").rstrip("/")
+SERVICE_KEY       = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SELECTOS_EMAIL    = os.environ.get("SELECTOS_EMAIL", "")
+SELECTOS_PASSWORD = os.environ.get("SELECTOS_PASSWORD", "")
 
 if not SUPABASE_URL or not SERVICE_KEY:
     print("ERROR: Faltan NEXT_PUBLIC_SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY")
@@ -188,6 +192,71 @@ def _parsear(raw: dict) -> Optional[dict]:
         return None
 
 
+# ── Login Selectos ────────────────────────────────────────────────────────────
+
+async def _login(page) -> bool:
+    """
+    Autentica en Selectos via Playwright usando SELECTOS_EMAIL / SELECTOS_PASSWORD.
+    Retorna True si el login fue exitoso.
+    """
+    try:
+        print(f"  . Haciendo login como {SELECTOS_EMAIL}...")
+        await page.evaluate("Blazor.navigateTo('/login')")
+        await asyncio.sleep(5)
+
+        # Buscar campos de email y contraseña
+        email_input = await page.query_selector("input[type='email'], input[placeholder*='orreo'], input[name*='email']")
+        pass_input  = await page.query_selector("input[type='password']")
+
+        if not email_input or not pass_input:
+            # Intentar abrir el modal de login si existe
+            login_btn = await page.query_selector("a[href*='login'], button:has-text('Ingresar'), a:has-text('Iniciar')")
+            if login_btn:
+                await login_btn.click()
+                await asyncio.sleep(3)
+                email_input = await page.query_selector("input[type='email'], input[placeholder*='orreo']")
+                pass_input  = await page.query_selector("input[type='password']")
+
+        if not email_input or not pass_input:
+            print("  WARN: No se encontraron campos de login")
+            return False
+
+        await email_input.fill(SELECTOS_EMAIL)
+        await asyncio.sleep(0.5)
+        await pass_input.fill(SELECTOS_PASSWORD)
+        await asyncio.sleep(0.5)
+
+        # Enviar formulario
+        submit = await page.query_selector("button[type='submit'], button:has-text('Ingresar'), button:has-text('Entrar')")
+        if submit:
+            await submit.click()
+        else:
+            await pass_input.press("Enter")
+
+        await asyncio.sleep(6)
+
+        # Verificar login exitoso buscando elemento de usuario autenticado
+        logged_in = await page.evaluate("""() => {
+            const body = document.body.innerText;
+            return body.includes('Mis productos') || body.includes('Cerrar sesión') ||
+                   body.includes('Mi cuenta') || document.querySelector('a[href*=\"/favorites\"]') !== null;
+        }""")
+
+        if logged_in:
+            print("  . Login exitoso")
+            # Volver a la home para continuar
+            await page.evaluate("Blazor.navigateTo('/')")
+            await asyncio.sleep(5)
+            return True
+        else:
+            print("  WARN: Login no confirmado — continuando sin sesión")
+            return False
+
+    except Exception as e:
+        print(f"  WARN: Error en login: {e}")
+        return False
+
+
 # ── Playwright crawler ────────────────────────────────────────────────────────
 
 async def scrape_selectos() -> list[dict]:
@@ -215,6 +284,12 @@ async def scrape_selectos() -> list[dict]:
         print("  . Inicializando Blazor...")
         await page.goto(f"{BASE_URL}/", wait_until="load", timeout=90_000)
         await asyncio.sleep(10)
+
+        # Login opcional — activa catálogo completo autenticado
+        if SELECTOS_EMAIL and SELECTOS_PASSWORD:
+            await _login(page)
+        else:
+            print("  . Sin credenciales — crawl en modo publico")
 
         while cats_pendientes:
             cat_id = cats_pendientes.pop(0)
