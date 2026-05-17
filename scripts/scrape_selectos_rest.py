@@ -26,7 +26,7 @@ import asyncio
 import os
 import sys
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
@@ -436,6 +436,46 @@ async def precargar_nombres(client: httpx.AsyncClient) -> dict[str, int]:
     return nombre_map
 
 
+async def _filtrar_ya_insertados(
+    client: httpx.AsyncClient,
+    precios_batch: list[dict],
+    ventana_horas: int = 6,
+) -> list[dict]:
+    """
+    Elimina del batch las variantes que ya tienen un precio registrado
+    en las últimas `ventana_horas` horas.
+    Evita duplicados cuando el scraper se ejecuta más de una vez en el día.
+    """
+    if not precios_batch:
+        return precios_batch
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=ventana_horas)).isoformat()
+    var_ids = list({p["variante_id"] for p in precios_batch})
+    ya_insertados: set[int] = set()
+    CHUNK = 400
+
+    for i in range(0, len(var_ids), CHUNK):
+        chunk = var_ids[i:i + CHUNK]
+        r = await client.get(
+            f"{REST_URL}/precios",
+            headers=HEADERS,
+            params={
+                "select":      "variante_id",
+                "variante_id": f"in.({','.join(str(v) for v in chunk)})",
+                "fecha_hora":  f"gte.{cutoff}",
+                "limit":       str(len(chunk)),
+            },
+        )
+        if r.status_code == 200:
+            for row in r.json():
+                ya_insertados.add(row["variante_id"])
+
+    if ya_insertados:
+        print(f"  Guard: {len(ya_insertados)} variantes ya tienen precio en las últimas {ventana_horas}h — omitidas")
+
+    return [p for p in precios_batch if p["variante_id"] not in ya_insertados]
+
+
 async def guardar_en_supabase(productos: list[dict], super_id: int, client: httpx.AsyncClient) -> dict:
     print("  -> Pre-cargando cache...")
     sku_map, ean_map = await precargar_variantes(client, super_id)
@@ -515,6 +555,9 @@ async def guardar_en_supabase(productos: list[dict], super_id: int, client: http
         except Exception as e:
             errores += 1
             print(f"  WARN: error prod: {e}")
+
+    # Guard: omitir variantes con precio reciente (< 6h)
+    precios_batch = await _filtrar_ya_insertados(client, precios_batch)
 
     print(f"  -> Insertando {len(precios_batch)} precios...")
     for i in range(0, len(precios_batch), CHUNK):

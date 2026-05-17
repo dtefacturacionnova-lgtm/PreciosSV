@@ -17,7 +17,7 @@ Requiere variables de entorno (o web/.env.local):
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from decimal import Decimal
 
@@ -202,6 +202,41 @@ async def cargar_supermercados(client: httpx.AsyncClient) -> dict[str, int]:
     return {r["nombre_corto"]: r["id"] for r in rows}
 
 
+async def _filtrar_ya_insertados(
+    client: httpx.AsyncClient,
+    precios_batch: list[dict],
+    ventana_horas: int = 6,
+) -> list[dict]:
+    """
+    Elimina del batch las variantes que ya tienen un precio registrado
+    en las últimas `ventana_horas` horas.
+    Evita duplicados cuando el scraper se ejecuta más de una vez en el día.
+    """
+    if not precios_batch:
+        return precios_batch
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=ventana_horas)).isoformat()
+    var_ids = list({p["variante_id"] for p in precios_batch})
+    ya_insertados: set[int] = set()
+    CHUNK = 400
+
+    for i in range(0, len(var_ids), CHUNK):
+        chunk = var_ids[i:i + CHUNK]
+        rows = await rest_get(client, "precios", {
+            "select":       "variante_id",
+            "variante_id":  f"in.({','.join(str(v) for v in chunk)})",
+            "fecha_hora":   f"gte.{cutoff}",
+            "limit":        str(len(chunk)),
+        })
+        for r in rows:
+            ya_insertados.add(r["variante_id"])
+
+    if ya_insertados:
+        print(f"  Guard: {len(ya_insertados)} variantes ya tienen precio en las últimas {ventana_horas}h — omitidas")
+
+    return [p for p in precios_batch if p["variante_id"] not in ya_insertados]
+
+
 async def guardar_productos(client: httpx.AsyncClient, productos: list[dict], super_map: dict[str, int]) -> dict:
     """
     Para cada producto scraped:
@@ -340,6 +375,9 @@ async def guardar_productos(client: httpx.AsyncClient, productos: list[dict], su
 
         except Exception as e:
             errores += 1
+
+    # ── Guard: omitir variantes con precio reciente (< 6h) ────────
+    precios_batch = await _filtrar_ya_insertados(client, precios_batch)
 
     # ── Insert masivo de precios ───────────────────────────────────
     if precios_batch:
