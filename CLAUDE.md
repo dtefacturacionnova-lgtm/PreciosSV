@@ -362,6 +362,45 @@ Usa `window.print()` con `@media print` CSS. No requiere librería externa.
 | PriceSmart | 6 | ❌ Sin scraper | Sitio: `pricesmart.com/sv` — analizar tecnología antes de implementar |
 | Familiar | 5 | ⏭️ Omitir | Opera bajo Maxi Despensa — mismos precios, no scraperear por separado |
 
+### 🔄 F4c — Mejoras UX App Consumidor (en curso)
+
+Mejoras priorizadas para el usuario final de la app pública.
+
+#### ✅ Implementadas (sesión 2026-05-18)
+- **Link externo a tienda** — icono en `TarjetaOferta` que abre el producto en el supermercado
+- **Botón Compartir** — Web Share API + fallback clipboard en tarjetas y detalle de producto
+- **Categoría clicable** — breadcrumb y tag de categoría en detalle filtran búsqueda
+
+#### ❌ Pendientes (ordenadas por impacto)
+
+| # | Feature | Complejidad | Notas |
+|---|---------|------------|-------|
+| 4 | **Canasta inteligente** | Media | Usuario agrega productos → app calcula qué tienda minimiza total. El diferenciador más fuerte — ningún comparador centroamericano lo tiene |
+| 5 | **Páginas de categoría** `/categoria/[slug]` | Baja | Landing con mejores ofertas por categoría. Emojis ya en BD |
+| 6 | **Búsqueda visible en móvil** | Baja | Navbar search oculto en `sm:`. Agregar ícono de búsqueda o barra visible en todas las pantallas |
+| 7 | **Sección "Más buscado hoy"** en home | Media | Top 6–8 productos más vistos en últimas 24h (requiere tabla `visitas` o analytics) |
+| 8 | **Alertas de precio para consumidor** | Media | Input: producto + precio objetivo. Avisa por email o WhatsApp cuando baja del umbral. Tabla `alertas_usuario` ya existe en BD |
+| 9 | **Comparar productos lado a lado** | Alta | Seleccionar 2–3 productos → tabla comparativa paralela (precios + histórico) |
+| 10 | **Trending / Historial de búsquedas** | Alta | Requiere autenticación consumidor o storage anónimo |
+| 11 | **Botón "Crear alerta" funcional** | Baja | Ya existe el botón en detalle — conectarlo a tabla `alertas_usuario` con email |
+
+#### Notas de implementación
+
+**Canasta inteligente (prioridad alta):**
+```
+/api/canasta  POST { productos: [{id, cantidad}] }
+→ Para cada tienda: suma precio_efectivo de cada producto
+→ Retorna ranking de tiendas por total + ahorro vs. opción más cara
+→ También sugiere "split" óptimo si vale la pena ir a 2 tiendas
+```
+
+**Páginas de categoría (fácil de implementar):**
+```
+/categoria/[slug]/page.tsx
+→ Reutiliza buscar/page.tsx con filtro categoria pre-aplicado
+→ SEO-friendly: "Mejores precios en Lácteos — El Salvador"
+```
+
 ### ❌ F5 — Platform & Ecosystem (NO iniciada)
 
 | Feature | Complejidad | Notas |

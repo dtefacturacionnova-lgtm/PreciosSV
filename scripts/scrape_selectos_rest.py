@@ -90,6 +90,8 @@ CATEGORIAS_RAIZ = [
     "03695",
     "01634",
     "042159",
+    # Jabones de Tocador (sub-cat de Cuidado Personal, confirmada en URL)
+    "081235",
 ]
 
 # Mapeo de código raíz Selectos → ID de categoría en BD
@@ -111,6 +113,7 @@ SELECTOS_CAT_MAP: dict[str, int | None] = {
     "03695": 1,   # sub-categoría de Lácteos observada en DOM
     "01634": 4,   # sub-categoría de Abarrotes observada en DOM
     "042159": 7,  # sub-categoría de Cuidado Personal observada en DOM
+    "081235": 7,  # Jabones de Tocador (confirmado via URL superselectos.com/products?category=081235)
 }
 
 
