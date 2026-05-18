@@ -77,7 +77,7 @@ CHUNK = 200
 # Códigos obtenidos navegando cada sección del menú de Selectos (2026-05-18)
 CATEGORIAS_RAIZ = [
     # Productos frescos (Carnes, Lácteos, Frutas, Embutidos, Mariscos, Panadería…)
-    "011", "012", "013", "015", "016", "017", "018", "119",
+    "011", "012", "013", "014", "015", "016", "017", "018", "019",
     # Productos congelados
     "021",
     # Abarrotes
@@ -112,8 +112,8 @@ CATEGORIAS_RAIZ = [
 #   hasta que se mapeen sub-categorías individualmente)
 SELECTOS_CAT_MAP: dict[str, int | None] = {
     # ── Productos frescos (mixto — sin categoría única en BD) ──────────
-    "011": None, "012": None, "013": None, "015": None,
-    "016": None, "017": None, "018": None, "119": None,
+    "011": None, "012": None, "013": None, "014": None, "015": None,
+    "016": None, "017": None, "018": None, "019": None,
     "01634": None,
     # ── Productos congelados ───────────────────────────────────────────
     "021": 9,
