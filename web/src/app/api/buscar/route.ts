@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     // ── 1. Buscar productos por nombre/marca ──────────────
     let prodQuery = supabase
       .from('productos')
-      .select('id, nombre_normalizado, marca, imagen_url, categorias!inner(id, nombre, slug)', { count: 'exact' })
+      .select('id, nombre_normalizado, marca, imagen_url, categorias(id, nombre, slug)', { count: 'exact' })
       .eq('activo', true)
 
     if (q) prodQuery = prodQuery.or(`nombre_normalizado.ilike.%${q}%,marca.ilike.%${q}%`)
