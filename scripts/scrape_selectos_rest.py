@@ -344,13 +344,24 @@ async def _login(page) -> bool:
 
 # ── Playwright crawler ────────────────────────────────────────────────────────
 
-async def scrape_selectos() -> list[dict]:
+async def scrape_selectos(
+    flush_client: Optional["httpx.AsyncClient"] = None,
+    flush_super_id: Optional[int] = None,
+    flush_every: int = 300,
+) -> list[dict]:
+    """
+    Crawlea Selectos via BFS.
+    Si se pasa flush_client + flush_super_id, guarda en Supabase cada
+    `flush_every` productos nuevos — así si el proceso se corta por timeout,
+    ya quedan guardados los productos procesados hasta ese punto.
+    """
     productos_raw: list[dict] = []
     skus_vistos:   set[str]   = set()
     cats_visitadas: set[str]  = set()
     cats_pendientes: list[str] = list(CATEGORIAS_RAIZ)
     # cat_root_map: cada cat_id → código raíz del que desciende (para heredar categoría BD)
     cat_root_map: dict[str, str] = {cat: cat for cat in CATEGORIAS_RAIZ}
+    _flush_buffer: list[dict] = []  # productos pendientes de guardar
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -424,6 +435,12 @@ async def scrape_selectos() -> list[dict]:
                             skus_vistos.add(pid)
                             productos_raw.append(p)
                             nuevos += 1
+                            _flush_buffer.append(p)
+                            if flush_client and flush_super_id and len(_flush_buffer) >= flush_every:
+                                print(f"  -> Guardado parcial: {len(_flush_buffer)} prods "
+                                      f"(acum={len(productos_raw)})...")
+                                await guardar_en_supabase(_flush_buffer, flush_super_id, flush_client)
+                                _flush_buffer.clear()
 
                 # Descubrir sub-categorías y propagar el código raíz
                 new_cats = await page.evaluate(JS_EXTRAER_CAT_LINKS)
@@ -443,6 +460,13 @@ async def scrape_selectos() -> list[dict]:
                 print(f"  WARN: Error en categoria {cat_id}: {str(e)[:80]}")
 
         await browser.close()
+
+    # Guardar los productos restantes en el buffer (los que no llegaron a fill_every)
+    if flush_client and flush_super_id and _flush_buffer:
+        print(f"  -> Guardado final: {len(_flush_buffer)} prods restantes "
+              f"(acum={len(productos_raw)})...")
+        await guardar_en_supabase(_flush_buffer, flush_super_id, flush_client)
+        _flush_buffer.clear()
 
     print(f"\n  -> {len(productos_raw)} productos unicos | {len(cats_visitadas)} categorias visitadas")
     return productos_raw
@@ -673,24 +697,20 @@ async def main():
             print(f"ERROR: '{SUPERMERCADO_KEY}' no encontrado")
             sys.exit(1)
 
-        print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scrapeando Selectos...")
-        productos = await scrape_selectos()
+        print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scrapeando Selectos "
+              f"(guardado incremental c/{300} prods)...")
+        productos = await scrape_selectos(flush_client=client, flush_super_id=super_id)
 
         if not productos:
             print("  -> Sin productos. Revisar conectividad.")
             return
 
-        print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Guardando en Supabase...")
-        resumen = await guardar_en_supabase(productos, super_id, client)
-        print(f"  -> +{resumen['nuevos']} nuevos, ~{resumen['actualizados']} actualizados, {resumen['errores']} errores")
-
+        # Los productos ya se guardaron incrementalmente dentro de scrape_selectos()
         print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Refrescando vista...")
         await refrescar_vista(client)
 
     print(f"\n=== Resumen ===")
-    print(f"  Nuevos:       {resumen['nuevos']}")
-    print(f"  Actualizados: {resumen['actualizados']}")
-    print(f"  Errores:      {resumen['errores']}")
+    print(f"  Total procesados: {len(productos)}")
 
 
 if __name__ == "__main__":
