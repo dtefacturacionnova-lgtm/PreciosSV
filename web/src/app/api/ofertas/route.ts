@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
     const prodIds   = [...new Set(precios.map((p: any) => p.producto_id as number))]
     const superIds  = [...new Set(precios.map((p: any) => p.supermercado_id as number))]
 
-    const [{ data: prodsRaw }, { data: supersRaw }] = await Promise.all([
+    const [{ data: prodsRaw }, { data: supersRaw }, { data: variantesRaw }] = await Promise.all([
       supabase.from('productos')
         .select('id, nombre_normalizado, marca, imagen_url')
         .in('id', prodIds)
@@ -45,10 +45,17 @@ export async function GET(request: NextRequest) {
       supabase.from('supermercados')
         .select('id, nombre, nombre_corto, color_hex')
         .in('id', superIds),
+      supabase.from('producto_variantes')
+        .select('producto_id, supermercado_id, url_producto')
+        .in('producto_id', prodIds),
     ])
 
     const prodsMap  = new Map<number, any>(((prodsRaw as any[] | null) ?? []).map((p: any) => [p.id, p]))
     const supersMap = new Map<number, any>(((supersRaw as any[] | null) ?? []).map((s: any) => [s.id, s]))
+    // Clave compuesta producto_id-supermercado_id → url_producto
+    const urlMap = new Map<string, string | null>(
+      ((variantesRaw as any[] | null) ?? []).map((v: any) => [`${v.producto_id}-${v.supermercado_id}`, v.url_producto ?? null])
+    )
 
     // Filtrar por supermercado si se pidió
     const preciosFiltrados = supermercado && supermercado !== 'todos'
@@ -74,6 +81,7 @@ export async function GET(request: NextRequest) {
           supermercado_key:    super_.nombre_corto,
           supermercado_color:  super_.color_hex,
           categoria_nombre:    null,
+          url_producto:        urlMap.get(`${p.producto_id}-${p.supermercado_id}`) ?? null,
         }
       })
 

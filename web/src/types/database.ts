@@ -132,6 +132,7 @@ export interface OfertaDelDia {
   supermercado_key: SupermercadoKey
   supermercado_color: string
   categoria_nombre: string | null
+  url_producto: string | null
 }
 
 export interface ComparativaProducto {
