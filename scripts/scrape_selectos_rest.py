@@ -92,6 +92,27 @@ CATEGORIAS_RAIZ = [
     "042159",
 ]
 
+# Mapeo de código raíz Selectos → ID de categoría en BD
+# DB: Lácteos=1, Carnes=2, Frutas=3, Abarrotes=4, Bebidas=5,
+#     Limpieza=6, Cuidado Personal=7, Panadería=8, Congelados=9, Mascotas=10
+SELECTOS_CAT_MAP: dict[str, int | None] = {
+    "0101": 4,    # Abarrotes
+    "0201": 5,    # Bebidas
+    "0301": 1,    # Lácteos y Huevos
+    "0401": 2,    # Carnes y Mariscos
+    "0501": 3,    # Frutas y Verduras
+    "0601": 6,    # Limpieza
+    "0701": 7,    # Cuidado Personal
+    "0801": 8,    # Panadería
+    "0901": 9,    # Congelados
+    "1001": None, # Bebés y Niños — sin equivalente en BD aún
+    "1101": 10,   # Mascotas
+    # Sub-categorías numéricas del DOM — se mapean por propagación BFS
+    "03695": 1,   # sub-categoría de Lácteos observada en DOM
+    "01634": 4,   # sub-categoría de Abarrotes observada en DOM
+    "042159": 7,  # sub-categoría de Cuidado Personal observada en DOM
+}
+
 
 # ── Helpers de texto ──────────────────────────────────────────────────────────
 
@@ -287,6 +308,8 @@ async def scrape_selectos() -> list[dict]:
     skus_vistos:   set[str]   = set()
     cats_visitadas: set[str]  = set()
     cats_pendientes: list[str] = list(CATEGORIAS_RAIZ)
+    # cat_root_map: cada cat_id → código raíz del que desciende (para heredar categoría BD)
+    cat_root_map: dict[str, str] = {cat: cat for cat in CATEGORIAS_RAIZ}
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -348,21 +371,27 @@ async def scrape_selectos() -> list[dict]:
                 # Extraer productos
                 raws = await page.evaluate(JS_EXTRAER_PRODUCTOS)
                 nuevos = 0
+                # Determinar categoría BD para los productos de esta página
+                root_code = cat_root_map.get(cat_id, cat_id)
+                cat_bd_id = SELECTOS_CAT_MAP.get(root_code)
                 for raw in raws:
                     pid = raw.get("productId", "")
                     if pid and pid not in skus_vistos:
                         p = _parsear(raw)
                         if p:
+                            p["categoria_id"] = cat_bd_id
                             skus_vistos.add(pid)
                             productos_raw.append(p)
                             nuevos += 1
 
-                # Descubrir sub-categorías
+                # Descubrir sub-categorías y propagar el código raíz
                 new_cats = await page.evaluate(JS_EXTRAER_CAT_LINKS)
                 agregadas = 0
                 for nc in new_cats:
                     if nc not in cats_visitadas and nc not in cats_pendientes:
                         cats_pendientes.append(nc)
+                        # Heredar raíz para que los productos de la sub-cat tengan la misma categoría BD
+                        cat_root_map[nc] = root_code
                         agregadas += 1
 
                 n_total = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
@@ -502,7 +531,7 @@ async def guardar_en_supabase(productos: list[dict], super_id: int, client: http
                     "nombre_normalizado": prod["nombre_norm"],
                     "marca":              prod.get("marca"),
                     "ean":                ean,
-                    "categoria_id":       None,
+                    "categoria_id":       prod.get("categoria_id"),
                     "imagen_url":         prod.get("imagen_url"),
                 }
                 r = await client.post(f"{REST_URL}/productos", json=body, headers=HEADERS)
@@ -518,6 +547,15 @@ async def guardar_en_supabase(productos: list[dict], super_id: int, client: http
                     continue
             else:
                 actualizados += 1
+                # Parchear categoria_id si el producto existente la tiene vacía
+                cat_id_bd = prod.get("categoria_id")
+                if cat_id_bd is not None:
+                    await client.patch(
+                        f"{REST_URL}/productos",
+                        json={"categoria_id": cat_id_bd},
+                        headers=HEADERS_MIN,
+                        params={"id": f"eq.{producto_id}", "categoria_id": "is.null"},
+                    )
 
             sku = prod.get("sku_local") or f"sel_{prod['nombre_norm'][:40]}"
             var_body = {
