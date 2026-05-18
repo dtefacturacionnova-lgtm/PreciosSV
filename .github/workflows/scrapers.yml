@@ -52,7 +52,7 @@ jobs:
   scrape-selectos:
     name: Selectos (Playwright)
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     if: ${{ github.event_name == 'schedule' || github.event.inputs.incluir_selectos == 'true' }}
 
     env:
