@@ -246,7 +246,15 @@ scrape-selectos → ubuntu-22.04, timeout 30min
                   python -m playwright install --with-deps chromium
                   python scripts/scrape_selectos_rest.py
 
-notificar       → siempre corre (if: always()), reporta resultado de ambos jobs
+normalizar      → needs: [scrape-vtex, scrape-selectos] (si al menos uno OK)
+                  pip install httpx google-generativeai
+                  python scripts/normalizar_productos.py
+
+alertas-whatsapp → needs: [normalizar]  ← PENDIENTE (ver sección 8a)
+                   pip install httpx
+                   python scripts/enviar_alertas_whatsapp.py
+
+notificar       → siempre corre (if: always()), reporta resultado de todos los jobs
 ```
 
 ### Dispatch manual (workflow_dispatch)
@@ -322,9 +330,10 @@ Usa `window.print()` con `@media print` CSS. No requiere librería externa.
 
 ### ✅ F1 — Infraestructura base
 - Supabase schema + vista materializada `precios_actuales`
-- Scrapers VTEX y Selectos funcionando
-- GitHub Actions 2×/día
-- App consumidor (home, búsqueda, detalle)
+- Scrapers VTEX (Walmart / Don Juan / Maxi Despensa) y Selectos
+- Guard anti-duplicados en scrapers (ventana 6h)
+- GitHub Actions 2×/día (pipeline: vtex + selectos → normalizar → alertas → notificar)
+- App consumidor (home, búsqueda, detalle, histórico)
 
 ### ✅ F2 — Portal B2B básico
 - Auth proveedores
@@ -336,15 +345,22 @@ Usa `window.print()` con `@media print` CSS. No requiere librería externa.
 - Category Management (`GestionCategorias`)
 - Exportar a PDF (`/proveedores/reporte`)
 
-### ❌ F4 — IA & Diferenciación (NO iniciada)
+### 🔄 F4 — IA & Diferenciación (en curso)
 
-| Feature | Complejidad | Notas |
-|---------|------------|-------|
-| Simulador de guerra de precios | Media | Modelar escenarios con datos existentes |
-| Calendario predictivo de promociones | Alta | Necesita histórico acumulado + ML/LLM |
-| Alertas por WhatsApp | Media | Twilio o WhatsApp Business API |
-| Geo-inteligencia (precios por zona) | Alta | Los supers no exponen precios por sucursal |
-| Normalización NLP cross-store | Media | Gemini API key disponible — linkear mismo producto entre supers |
+| Feature | Estado | Complejidad | Notas |
+|---------|--------|------------|-------|
+| Normalización NLP cross-store | ✅ Listo | Media | Gemini 1.5 Flash, batches de 20, --dry-run |
+| Simulador de guerra de precios | ✅ Listo | Media | Slider + métricas + Recharts, elasticidad −1.5 |
+| Alertas por WhatsApp | ❌ Pendiente | Media | **Ver sección 8a — Meta Cloud API** |
+| Calendario predictivo de promociones | ❌ Pendiente | Alta | Necesita histórico acumulado ≥3 meses + Gemini |
+| Cobertura geográfica por sucursales | ❌ Pendiente | Media | **Redefinida** — mapa de sucursales por cadena (ver sección 8b) |
+
+### ❌ F4b — Scrapers pendientes
+
+| Supermercado | ID BD | Estado | Notas |
+|---|---|---|---|
+| PriceSmart | 6 | ❌ Sin scraper | Sitio: `pricesmart.com/sv` — analizar tecnología antes de implementar |
+| Familiar | 5 | ⏭️ Omitir | Opera bajo Maxi Despensa — mismos precios, no scraperear por separado |
 
 ### ❌ F5 — Platform & Ecosystem (NO iniciada)
 
@@ -355,6 +371,127 @@ Usa `window.print()` con `@media print` CSS. No requiere librería externa.
 | Benchmarking vs industria regional | Alta | Requiere datos de otros países |
 | Modelo freemium / suscripciones | Alta | Stripe + lógica de planes |
 | Expansión Centroamérica | Alta | Scrapers nuevos por país |
+
+---
+
+## 8a. Plan: Alertas por WhatsApp (Meta Cloud API)
+
+### Prerrequisitos — lo que hay que obtener UNA VEZ
+
+| Ítem | Dónde | Estado |
+|------|-------|--------|
+| Facebook Business Manager verificado | business.facebook.com | ❓ Confirmar |
+| WhatsApp Business Account (WABA) | Meta for Developers | ❓ Confirmar |
+| Número de teléfono dedicado | Cualquier línea SV sin WhatsApp activo | ❓ Confirmar |
+| `WHATSAPP_TOKEN` (token permanente) | Meta → System User con rol Admin | ❓ Confirmar |
+| `WHATSAPP_PHONE_NUMBER_ID` | Meta for Developers → Phone Numbers | ❓ Confirmar |
+| Template aprobado `alerta_oferta` | Meta → Message Templates (1-2 días revisión) | ❓ Confirmar |
+
+### Secrets a agregar en GitHub
+
+```
+WHATSAPP_TOKEN           ← token permanente de Meta
+WHATSAPP_PHONE_NUMBER_ID ← ID del número remitente
+```
+
+### Cambios en BD necesarios
+
+```sql
+-- Número WhatsApp por proveedor (opt-in explícito)
+ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS whatsapp_numero TEXT;
+
+-- Registro de alertas ya enviadas (evita reenviar la misma oferta)
+CREATE TABLE IF NOT EXISTS alertas_enviadas (
+  id            BIGSERIAL PRIMARY KEY,
+  proveedor_id  BIGINT       NOT NULL REFERENCES proveedores(id),
+  variante_id   BIGINT       NOT NULL,
+  canal         TEXT         NOT NULL DEFAULT 'whatsapp',
+  enviado_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_alertas_enviadas_lookup
+  ON alertas_enviadas (proveedor_id, variante_id, enviado_at);
+```
+
+### Template Meta (ejemplo — nombre: `alerta_oferta`)
+
+```
+🔔 *Alerta de competencia — PreciosSV*
+
+Tu competidor *{{1}}* lanzó una oferta:
+• Producto: {{2}}
+• Precio oferta: ${{3}} (antes ${{4}}, -{{5}}%)
+• Supermercado: {{6}}
+
+Ver dashboard: https://preciosv.com/proveedores/dashboard
+```
+
+### Archivos a crear
+
+```
+scripts/enviar_alertas_whatsapp.py    ← script Python (corre en GitHub Actions)
+```
+
+### Posición en el pipeline de Actions
+
+```
+scrape-vtex ─┐
+              ├── normalizar ── alertas-whatsapp ── notificar
+scrape-selectos ─┘
+```
+
+El job `alertas-whatsapp`:
+- Requiere `needs: [normalizar]`
+- Solo corre si al menos un scraper tuvo éxito
+- `pip install httpx` (sin dependencias extra — Meta API es REST puro)
+- Solo envía alertas con `estado = 'nueva'` (≤48h) para no hacer spam
+
+---
+
+## 8b. Plan: Cobertura geográfica por sucursales (feature redefinida)
+
+### Por qué no "precios por sucursal"
+Ningún super salvadoreño expone precios diferenciados por sucursal — tienen un
+catálogo nacional único. Intentarlo requeriría acceso directo a sus sistemas internos.
+
+### Qué sí es posible: mapa de presencia por cadena
+Los localizadores de sucursales son **datos públicos** en los sitios de cada super.
+La feature redefinida muestra al proveedor:
+
+> *"Walmart tiene 14 sucursales activas: 8 en San Salvador, 3 en La Libertad…
+> Tus productos están en esta cadena → cobertura estimada: ~350,000 personas"*
+
+### Datos a obtener (scraping puntual, no diario)
+
+| Super | Fuente | Tecnología |
+|---|---|---|
+| Walmart SV | `walmart.com.sv/tiendas` | HTML estático o JSON interno |
+| Súper Selectos | `superselectos.com/sucursales` | Blazor (ya tenemos el scraper) |
+| Don Juan | Sitio web o Google Maps API | HTML o Places API |
+| Maxi Despensa | Sitio web | HTML |
+| PriceSmart | `pricesmart.com/sv/stores` | HTML |
+
+### Tabla en BD
+
+```sql
+CREATE TABLE IF NOT EXISTS sucursales (
+  id              BIGSERIAL PRIMARY KEY,
+  supermercado_id INT         NOT NULL REFERENCES supermercados(id),
+  nombre          TEXT        NOT NULL,
+  departamento    TEXT,
+  municipio       TEXT,
+  direccion       TEXT,
+  latitud         NUMERIC(9,6),
+  longitud        NUMERIC(9,6),
+  activa          BOOLEAN     DEFAULT TRUE,
+  actualizado_at  TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### Script a crear
+
+```
+scripts/scrape_sucursales.py   ← run manual (datos no cambian seguido)
+```
 
 ---
 
@@ -424,4 +561,4 @@ httpx.post('https://api.github.com/repos/dtefacturacionnova-lgtm/PreciosSV/actio
 
 ---
 
-*Última actualización: 2026-05-17 — Sesión: scrapers completos + login Selectos + GitHub Actions funcionando*
+*Última actualización: 2026-05-18 — Sesión: F4 parcial (NLP cross-store + Simulador) + guard anti-duplicados scrapers + plan WhatsApp Meta + sucursales redefinida + PriceSmart pendiente*
