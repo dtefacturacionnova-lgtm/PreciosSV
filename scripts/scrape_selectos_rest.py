@@ -73,48 +73,86 @@ BASE_URL = "https://www.superselectos.com"
 SUPERMERCADO_KEY = "selectos"
 CHUNK = 200
 
-# Categorías raíz conocidas — se descubren más durante el crawl
+# ── Categorías raíz confirmadas vía URL superselectos.com/products?category=XXX ─
+# Códigos obtenidos navegando cada sección del menú de Selectos (2026-05-18)
 CATEGORIAS_RAIZ = [
-    "0101",    # Abarrotes
-    "0201",    # Bebidas
-    "0301",    # Lácteos y Huevos
-    "0401",    # Carnes y Mariscos
-    "0501",    # Frutas y Verduras
-    "0601",    # Limpieza
-    "0701",    # Cuidado Personal
-    "0801",    # Panadería
-    "0901",    # Congelados
-    "1001",    # Bebés y Niños
-    "1101",    # Mascotas
-    # Adicionalmente las que aparecen en el DOM
-    "03695",
-    "01634",
-    "042159",
-    # Jabones de Tocador (sub-cat de Cuidado Personal, confirmada en URL)
-    "081235",
+    # Productos frescos (Carnes, Lácteos, Frutas, Embutidos, Mariscos, Panadería…)
+    "011", "012", "013", "015", "016", "017", "018", "119",
+    # Productos congelados
+    "021",
+    # Abarrotes
+    "031", "032", "033", "035", "036", "037",
+    "0310", "0311", "0313", "0315", "0316", "0317", "0318", "0324",
+    # Cervezas, vinos y licores
+    "041", "042", "043", "044", "045",
+    # Bebidas
+    "051", "052", "053", "054", "055", "056", "057", "058", "059", "0510",
+    # Cuidado mascotas
+    "061", "062", "063",
+    # Cuidado del hogar
+    "071", "072", "073", "074", "075", "076", "077",
+    # Cuidado personal
+    "081", "082", "083", "084", "085", "086", "087", "088", "089",
+    "0810", "0811",
+    # Cuidado del bebé
+    "091", "092", "093", "094", "095",
+    # Mercancías generales (ropa, juguetes, ferretería — se scrapea pero sin cat BD)
+    "101",
+    # Sub-categorías confirmadas vía URL (descubiertas en crawls anteriores)
+    "03695",    # sub de Abarrotes
+    "01634",    # sub de Productos frescos
+    "042159",   # sub de Cervezas/Licores
+    "081235",   # Jabones de tocador → Cuidado Personal
 ]
 
-# Mapeo de código raíz Selectos → ID de categoría en BD
+# ── Mapeo código Selectos → ID de categoría en BD ────────────────────────────
 # DB: Lácteos=1, Carnes=2, Frutas=3, Abarrotes=4, Bebidas=5,
 #     Limpieza=6, Cuidado Personal=7, Panadería=8, Congelados=9, Mascotas=10
+# Productos frescos → None (mezcla de categorías; los productos heredan null
+#   hasta que se mapeen sub-categorías individualmente)
 SELECTOS_CAT_MAP: dict[str, int | None] = {
-    "0101": 4,    # Abarrotes
-    "0201": 5,    # Bebidas
-    "0301": 1,    # Lácteos y Huevos
-    "0401": 2,    # Carnes y Mariscos
-    "0501": 3,    # Frutas y Verduras
-    "0601": 6,    # Limpieza
-    "0701": 7,    # Cuidado Personal
-    "0801": 8,    # Panadería
-    "0901": 9,    # Congelados
-    "1001": None, # Bebés y Niños — sin equivalente en BD aún
-    "1101": 10,   # Mascotas
-    # Sub-categorías numéricas del DOM — se mapean por propagación BFS
-    "03695": 1,   # sub-categoría de Lácteos observada en DOM
-    "01634": 4,   # sub-categoría de Abarrotes observada en DOM
-    "042159": 7,  # sub-categoría de Cuidado Personal observada en DOM
-    "081235": 7,  # Jabones de Tocador (confirmado via URL superselectos.com/products?category=081235)
+    # ── Productos frescos (mixto — sin categoría única en BD) ──────────
+    "011": None, "012": None, "013": None, "015": None,
+    "016": None, "017": None, "018": None, "119": None,
+    "01634": None,
+    # ── Productos congelados ───────────────────────────────────────────
+    "021": 9,
+    # ── Abarrotes ──────────────────────────────────────────────────────
+    "031": 4, "032": 4, "033": 4, "035": 4, "036": 4, "037": 4,
+    "0310": 4, "0311": 4, "0313": 4, "0315": 4, "0316": 4,
+    "0317": 4, "0318": 4, "0324": 4, "03695": 4,
+    # ── Cervezas, vinos y licores → Bebidas ───────────────────────────
+    "041": 5, "042": 5, "043": 5, "044": 5, "045": 5, "042159": 5,
+    # ── Bebidas ────────────────────────────────────────────────────────
+    "051": 5, "052": 5, "053": 5, "054": 5, "055": 5,
+    "056": 5, "057": 5, "058": 5, "059": 5, "0510": 5,
+    # ── Cuidado mascotas ───────────────────────────────────────────────
+    "061": 10, "062": 10, "063": 10,
+    # ── Cuidado del hogar → Limpieza ───────────────────────────────────
+    "071": 6, "072": 6, "073": 6, "074": 6, "075": 6, "076": 6, "077": 6,
+    # ── Cuidado personal ───────────────────────────────────────────────
+    "081": 7, "082": 7, "083": 7, "084": 7, "085": 7,
+    "086": 7, "087": 7, "088": 7, "089": 7, "0810": 7, "0811": 7,
+    "081235": 7,
+    # ── Cuidado del bebé (sin cat BD aún) ─────────────────────────────
+    "091": None, "092": None, "093": None, "094": None, "095": None,
+    # ── Mercancías generales (fuera del scope de comparador) ───────────
+    "101": None,
 }
+
+
+def _inferir_cat_bd(cat_code: str) -> int | None:
+    """Devuelve el ID de categoría BD para un código de categoría Selectos.
+    Primero busca coincidencia exacta; si no, infiere por prefijo de 2-3 dígitos
+    para cubrir sub-categorías descubiertas dinámicamente en el BFS."""
+    if cat_code in SELECTOS_CAT_MAP:
+        return SELECTOS_CAT_MAP[cat_code]
+    # Fallback: prefijo de 3 → 2 dígitos
+    for n in (3, 2):
+        prefix = cat_code[:n]
+        if prefix in SELECTOS_CAT_MAP:
+            return SELECTOS_CAT_MAP[prefix]
+    return None
 
 
 # ── Helpers de texto ──────────────────────────────────────────────────────────
@@ -376,7 +414,7 @@ async def scrape_selectos() -> list[dict]:
                 nuevos = 0
                 # Determinar categoría BD para los productos de esta página
                 root_code = cat_root_map.get(cat_id, cat_id)
-                cat_bd_id = SELECTOS_CAT_MAP.get(root_code)
+                cat_bd_id = _inferir_cat_bd(root_code)
                 for raw in raws:
                     pid = raw.get("productId", "")
                     if pid and pid not in skus_vistos:
