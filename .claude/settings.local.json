@@ -1,7 +1,34 @@
 {
   "permissions": {
     "allow": [
-      "mcp__Claude_in_Chrome__navigate"
+      "mcp__Claude_in_Chrome__navigate",
+      "Bash(git push *)",
+      "PowerShell(Select-String -LiteralPath \"C:\\\\Sistemas\\\\PreciosSV\\\\web\\\\src\\\\app\\\\api\\\\proveedores\\\\catalogo\\\\route.ts\" -Pattern \"produto_id|producto_id\" | ForEach-Object { \"L\" + $_.LineNumber + \": \" + $_.Line.Trim\\(\\) })",
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(pip install *)",
+      "Bash(python -c ' *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(tasklist)",
+      "mcp__ab69d56e-2fcb-4ae8-9999-0dd99b8af73c__list_projects",
+      "mcp__ab69d56e-2fcb-4ae8-9999-0dd99b8af73c__list_teams",
+      "mcp__ab69d56e-2fcb-4ae8-9999-0dd99b8af73c__list_deployments",
+      "WebSearch",
+      "Bash(python -m playwright install chromium)",
+      "Bash(where gh *)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(python -u -c ' *)",
+      "Bash(git reset *)",
+      "mcp__2028d667-c24e-42b4-af49-be3d9cdeeea5__execute_sql",
+      "Bash(tasklist /FI \"IMAGENAME eq python.exe\" /FO CSV)",
+      "Bash(python scripts/scrape_selectos_rest.py)",
+      "Bash(ping -n 35 127.0.0.1)",
+      "Bash(python -W ignore scripts/scrape_selectos_rest.py)",
+      "Bash(jobs -l)",
+      "Bash(echo \"PID: $!\")",
+      "mcp__2028d667-c24e-42b4-af49-be3d9cdeeea5__list_tables",
+      "Bash(npx tsc *)"
     ]
   }
 }
