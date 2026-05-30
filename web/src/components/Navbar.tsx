@@ -1,24 +1,32 @@
 'use client'
 
-import { Search, User, ChevronRight, ShoppingCart } from 'lucide-react'
+import { Search, User, ChevronRight, ShoppingCart, X } from 'lucide-react'
 import Link from 'next/link'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useCanasta } from '@/lib/canasta'
 
 export default function Navbar() {
-  const [query, setQuery] = useState('')
+  const [query,        setQuery]        = useState('')
+  const [searchAbierto, setSearchAbierto] = useState(false)
   const router = useRouter()
   const { totalItems } = useCanasta()
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    if (query.trim()) router.push(`/buscar?q=${encodeURIComponent(query.trim())}`)
+    const q = query.trim()
+    if (q) {
+      router.push(`/buscar?q=${encodeURIComponent(q)}`)
+      setSearchAbierto(false)
+      setQuery('')
+    }
   }
 
   return (
     <header className="sticky top-0 z-50 bg-white border-b border-slate-200 shadow-sm">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center gap-4">
+
+      {/* Fila principal */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center gap-3">
 
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2 flex-shrink-0">
@@ -38,9 +46,9 @@ export default function Navbar() {
           </span>
         </Link>
 
-        {/* Buscador */}
-        <form onSubmit={handleSearch} className="flex-1 max-w-2xl">
-          <div className="relative">
+        {/* Buscador — solo visible en desktop (md+) */}
+        <form onSubmit={handleSearch} className="hidden md:flex flex-1 max-w-2xl">
+          <div className="relative w-full">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
@@ -55,8 +63,21 @@ export default function Navbar() {
           </div>
         </form>
 
+        {/* Spacer en móvil */}
+        <div className="flex-1 md:hidden" />
+
         {/* Acciones */}
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+
+          {/* Buscar — solo en móvil (< md) */}
+          <button
+            onClick={() => setSearchAbierto(s => !s)}
+            className="md:hidden relative p-2 rounded-full text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            title="Buscar"
+            aria-label="Abrir buscador"
+          >
+            {searchAbierto ? <X className="w-5 h-5" /> : <Search className="w-5 h-5" />}
+          </button>
 
           {/* Canasta */}
           <Link
@@ -74,23 +95,53 @@ export default function Navbar() {
 
           <Link
             href="/auth/login"
-            className="hidden sm:flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-300
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-full border border-slate-300
                        text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
           >
             <User className="w-4 h-4" />
-            Iniciar sesión
+            <span className="hidden lg:inline">Iniciar sesión</span>
           </Link>
+
           <Link
             href="/proveedores/dashboard"
-            className="flex items-center gap-1 px-4 py-2 rounded-full bg-[#059669] text-white
+            className="flex items-center gap-1 px-3 py-2 rounded-full bg-[#059669] text-white
                        text-sm font-medium hover:bg-emerald-700 transition-colors"
           >
-            Soy Proveedor
+            <span className="hidden sm:inline">Soy Proveedor</span>
+            <span className="sm:hidden text-xs">B2B</span>
             <ChevronRight className="w-4 h-4" />
           </Link>
         </div>
-
       </div>
+
+      {/* Barra de búsqueda móvil — desplegable */}
+      {searchAbierto && (
+        <div className="md:hidden border-t border-slate-100 px-4 py-3 bg-white">
+          <form onSubmit={handleSearch}>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                type="search"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="¿Qué producto buscas?"
+                autoFocus
+                className="w-full pl-10 pr-20 py-3 rounded-2xl border border-slate-200 bg-slate-50
+                           text-sm text-slate-800 placeholder-slate-400
+                           focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <button
+                type="submit"
+                className="absolute right-2 top-1/2 -translate-y-1/2 bg-blue-600 text-white text-sm
+                           font-medium px-3 py-1.5 rounded-xl hover:bg-blue-700 transition-colors"
+              >
+                Buscar
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
     </header>
   )
 }

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import ComparativaPrecios from '@/components/ComparativaPrecios'
 import HistoricoChart from '@/components/HistoricoChart'
+import ModalAlerta from '@/components/ModalAlerta'
 import { useCanasta } from '@/lib/canasta'
 
 interface PrecioSuper {
@@ -56,8 +57,9 @@ export default function ProductoPage({ params }: { params: Promise<{ id: string 
   const [tab, setTab] = useState<Tab>('comparativa')
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [copiado,  setCopiado]  = useState(false)
-  const [agregado, setAgregado] = useState(false)
+  const [copiado,       setCopiado]       = useState(false)
+  const [agregado,      setAgregado]      = useState(false)
+  const [alertaAbierta, setAlertaAbierta] = useState(false)
   const { agregar, estaEnCanasta } = useCanasta()
 
   useEffect(() => {
@@ -231,7 +233,10 @@ export default function ProductoPage({ params }: { params: Promise<{ id: string 
                     </span>
                   </button>
                   {/* Crear alerta */}
-                  <button className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors">
+                  <button
+                    onClick={() => setAlertaAbierta(true)}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors"
+                  >
                     <Bell className="w-4 h-4" />
                     <span className="hidden sm:inline">Crear alerta</span>
                   </button>
@@ -258,6 +263,16 @@ export default function ProductoPage({ params }: { params: Promise<{ id: string 
         <ComparativaPrecios precios={precios} />
       ) : (
         <HistoricoChart historico={historico} dias={30} />
+      )}
+
+      {/* Modal alerta de precio */}
+      {alertaAbierta && (
+        <ModalAlerta
+          productoId={producto.id}
+          nombreProducto={producto.nombre_normalizado}
+          precioActual={precioMin ?? null}
+          onClose={() => setAlertaAbierta(false)}
+        />
       )}
 
     </div>
