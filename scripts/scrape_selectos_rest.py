@@ -20,7 +20,20 @@ Estrategia:
   El sitio usa Blazor Server (binario SignalR) — no hay REST API pública.
   Se usa Playwright para navegar via Blazor.navigateTo('/products?category=XXXX')
   y extraer productos del DOM renderizado (.producto-box).
-  Un crawler recorre el árbol de categorías descubriendo sub-categorías.
+
+  Flujo del crawler:
+  1. Inicializar Blazor en la home (obligatorio)
+  2. Login con credenciales (activa catálogo completo)
+  3. Extraer TODAS las categorías visibles en la home (~45 subcategorías reales)
+  4. BFS sobre todas las categorías descubiertas
+  5. Por cada categoría: paginar con botón "Siguiente" hasta agotar páginas
+     ⚠️  El sitio usa paginación por botón, NO scroll infinito (~38 prods/pág)
+
+  Correcciones aplicadas (2026-05-29):
+  - Fix 1: Seed desde home — antes solo usábamos 13 codes manuales, ahora
+    descubrimos dinámicamente las ~45 subcategorías que muestra la home.
+  - Fix 2: Paginación — el scroll nunca cargaba más de una página; ahora
+    se clickea 'Siguiente' hasta que desaparece o no hay productos nuevos.
 """
 import asyncio
 import os
@@ -33,9 +46,13 @@ from typing import Optional
 import unicodedata
 import re
 
-# Forzar stdout a utf-8 en Windows
+# Forzar stdout a utf-8 y sin buffer (crítico para background tasks y CI)
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+else:
+    # Forzar line buffering incluso si ya es utf-8
+    sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
 # ── Cargar .env.local del proyecto web ───────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -60,6 +77,14 @@ import httpx
 from playwright.async_api import async_playwright
 
 REST_URL = f"{SUPABASE_URL}/rest/v1"
+
+# Límite de páginas por categoría — evita que categorías "paraguas" (011, 012…)
+# consuman todo el timeout de GitHub Actions (90 min).
+# Cada página tarda ~12s → MAX_PAGES_PER_CAT=8 = ~96s/cat max.
+# Con ~120 categorías: worst-case 120×96s = ~192 min, pero la mayoría
+# de leaf-cats terminan en pag 1-2 porque los prods ya se vieron en la cat padre.
+MAX_PAGES_PER_CAT = int(os.environ.get("SELECTOS_MAX_PAGES", "8"))
+
 HEADERS = {
     "apikey":        SERVICE_KEY,
     "Authorization": f"Bearer {SERVICE_KEY}",
@@ -389,6 +414,19 @@ async def scrape_selectos(
         else:
             print("  . Sin credenciales — crawl en modo publico")
 
+        # ── FIX 1: Descubrir TODAS las categorías visibles en home ────────────
+        # La home muestra las ~45 subcategorías reales con productos.
+        # Agregamos todas como semillas antes de empezar el BFS.
+        print("  . Descubriendo categorias desde home...")
+        home_cats = await page.evaluate(JS_EXTRAER_CAT_LINKS)
+        antes = len(cats_pendientes)
+        for cat in home_cats:
+            if cat not in cats_visitadas and cat not in cats_pendientes:
+                cats_pendientes.append(cat)
+                cat_root_map[cat] = cat
+        print(f"  . Home: {len(home_cats)} links → +{len(cats_pendientes)-antes} nuevas semillas "
+              f"({len(cats_pendientes)} total pendientes)")
+
         while cats_pendientes:
             cat_id = cats_pendientes.pop(0)
             if cat_id in cats_visitadas:
@@ -398,63 +436,118 @@ async def scrape_selectos(
             url_cat = f"/products?category={cat_id}"
             try:
                 await page.evaluate(f"Blazor.navigateTo('{url_cat}')")
-                # Esperar a que los productos aparezcan
                 await asyncio.sleep(3)
+
+                # Esperar carga inicial de productos
                 for _ in range(20):
-                    n = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
                     nombres_ok = await page.evaluate(
                         "() => document.querySelectorAll('.producto-box h5.prod-nombre a').length"
                     )
                     if nombres_ok > 0:
                         break
                     await asyncio.sleep(1.5)
-                await asyncio.sleep(2)
 
-                # Scroll para cargar más
-                prev_count = -1
-                for _ in range(15):
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await asyncio.sleep(1.5)
-                    curr = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
-                    if curr == prev_count:
-                        break
-                    prev_count = curr
-
-                # Extraer productos
-                raws = await page.evaluate(JS_EXTRAER_PRODUCTOS)
-                nuevos = 0
-                # Determinar categoría BD para los productos de esta página
                 root_code = cat_root_map.get(cat_id, cat_id)
                 cat_bd_id = _inferir_cat_bd(root_code)
-                for raw in raws:
-                    pid = raw.get("productId", "")
-                    if pid and pid not in skus_vistos:
-                        p = _parsear(raw)
-                        if p:
-                            p["categoria_id"] = cat_bd_id
-                            skus_vistos.add(pid)
-                            productos_raw.append(p)
-                            nuevos += 1
-                            _flush_buffer.append(p)
-                            if flush_client and flush_super_id and len(_flush_buffer) >= flush_every:
-                                print(f"  -> Guardado parcial: {len(_flush_buffer)} prods "
-                                      f"(acum={len(productos_raw)})...")
-                                await guardar_en_supabase(_flush_buffer, flush_super_id, flush_client)
-                                _flush_buffer.clear()
+                cat_nuevos = 0
+                pagina = 1
 
-                # Descubrir sub-categorías y propagar el código raíz
-                new_cats = await page.evaluate(JS_EXTRAER_CAT_LINKS)
-                agregadas = 0
-                for nc in new_cats:
-                    if nc not in cats_visitadas and nc not in cats_pendientes:
-                        cats_pendientes.append(nc)
-                        # Heredar raíz para que los productos de la sub-cat tengan la misma categoría BD
-                        cat_root_map[nc] = root_code
-                        agregadas += 1
+                # ── FIX 2: Paginación con botón "Siguiente" ────────────────────
+                # El sitio NO usa scroll infinito — tiene paginación por botón.
+                # Cada página muestra ~38 productos. Hay que clickear "Siguiente"
+                # para obtener los productos de la página 2, 3, etc.
+                while True:
+                    # Scroll suave para forzar render de los productos visibles
+                    prev_count = -1
+                    for _ in range(6):
+                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        await asyncio.sleep(1.2)
+                        curr = await page.evaluate(
+                            "() => document.querySelectorAll('.producto-box').length"
+                        )
+                        if curr == prev_count:
+                            break
+                        prev_count = curr
 
-                n_total = await page.evaluate("() => document.querySelectorAll('.producto-box').length")
-                print(f"  . cat={cat_id:10s} | +{nuevos:3d} nuevos | {n_total:3d} DOM | "
-                      f"pending={len(cats_pendientes)} | total={len(productos_raw)}")
+                    # Extraer productos de la página actual
+                    raws = await page.evaluate(JS_EXTRAER_PRODUCTOS)
+                    nuevos_pagina = 0
+                    for raw in raws:
+                        pid = raw.get("productId", "")
+                        if pid and pid not in skus_vistos:
+                            p = _parsear(raw)
+                            if p:
+                                p["categoria_id"] = cat_bd_id
+                                skus_vistos.add(pid)
+                                productos_raw.append(p)
+                                cat_nuevos += 1
+                                nuevos_pagina += 1
+                                _flush_buffer.append(p)
+                                if flush_client and flush_super_id and len(_flush_buffer) >= flush_every:
+                                    print(f"  -> Guardado parcial: {len(_flush_buffer)} prods "
+                                          f"(acum={len(productos_raw)})...")
+                                    await guardar_en_supabase(_flush_buffer, flush_super_id, flush_client)
+                                    _flush_buffer.clear()
+
+                    # Descubrir sub-categorías (solo en página 1 para no duplicar)
+                    if pagina == 1:
+                        new_cats = await page.evaluate(JS_EXTRAER_CAT_LINKS)
+                        for nc in new_cats:
+                            if nc not in cats_visitadas and nc not in cats_pendientes:
+                                cats_pendientes.append(nc)
+                                cat_root_map[nc] = root_code
+
+                    n_dom = await page.evaluate(
+                        "() => document.querySelectorAll('.producto-box').length"
+                    )
+
+                    # Verificar si hay botón "Siguiente" habilitado
+                    siguiente_ok = await page.evaluate("""() => {
+                        const btns = Array.from(document.querySelectorAll('button,li.page-item a'));
+                        const sig = btns.find(b =>
+                            b.innerText && b.innerText.trim() === 'Siguiente' &&
+                            !b.disabled &&
+                            !b.closest('li.disabled')
+                        );
+                        return sig !== null && sig !== undefined;
+                    }""")
+
+                    if pagina == 1:
+                        print(f"  . cat={cat_id:10s} | +{cat_nuevos:3d} nuevos | {n_dom:3d} DOM | "
+                              f"pending={len(cats_pendientes)} | total={len(productos_raw)}"
+                              + (f" [+pag]" if siguiente_ok else ""))
+                    else:
+                        print(f"    ↳ pag {pagina}: +{nuevos_pagina:3d} nuevos | {n_dom:3d} DOM"
+                              + (f" [+pag]" if siguiente_ok else ""))
+
+                    # Si no hay siguiente, no hubo nuevos, o alcanzamos el límite → parar
+                    if not siguiente_ok or nuevos_pagina == 0 or pagina >= MAX_PAGES_PER_CAT:
+                        if pagina >= MAX_PAGES_PER_CAT and siguiente_ok:
+                            print(f"    ↳ cortada en pag {pagina} (MAX_PAGES_PER_CAT={MAX_PAGES_PER_CAT})")
+                        break
+
+                    # Guardar productId del primer item para detectar cambio de página
+                    first_pid_antes = raws[0]["productId"] if raws else None
+
+                    # Click en "Siguiente" y esperar que cambien los productos
+                    await page.evaluate("""() => {
+                        const btns = Array.from(document.querySelectorAll('button,li.page-item a'));
+                        const sig = btns.find(b =>
+                            b.innerText && b.innerText.trim() === 'Siguiente' &&
+                            !b.disabled && !b.closest('li.disabled')
+                        );
+                        if (sig) sig.click();
+                    }""")
+                    await asyncio.sleep(3)
+
+                    # Esperar a que los productos cambien (indica navegación exitosa)
+                    for _ in range(20):
+                        new_raws = await page.evaluate(JS_EXTRAER_PRODUCTOS)
+                        if new_raws and new_raws[0].get("productId") != first_pid_antes:
+                            break
+                        await asyncio.sleep(1)
+
+                    pagina += 1
 
             except Exception as e:
                 print(f"  WARN: Error en categoria {cat_id}: {str(e)[:80]}")
