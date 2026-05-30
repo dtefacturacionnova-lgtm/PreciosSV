@@ -384,18 +384,20 @@ Mejoras priorizadas para el usuario final de la app pública.
   - Controles de cantidad, eliminar, vaciar canasta
   - Estado persistido en localStorage
 - **Fix bug TS**: `PromocionesAnalytica.tsx` línea 177 — `c.catalogo_id` → `i` (index)
+- **Páginas de categoría** `/categoria/[slug]` — ISR 1h, SEO metadata con emoji,
+  sección "Mejores ofertas" (top 6) + todos los productos con orden y paginación
+- **Búsqueda visible en móvil** — ícono toggle en Navbar despliega barra colapsable
+  con autoFocus; desktop mantiene barra siempre visible
+- **Alertas de precio consumidor** — `POST /api/alertas` + `ModalAlerta` + botón
+  conectado en página de detalle; guarda en `alertas_usuario`, actualiza si ya existe
 
 #### ❌ Pendientes (ordenadas por impacto)
 
 | # | Feature | Complejidad | Notas |
 |---|---------|------------|-------|
-| 5 | **Páginas de categoría** `/categoria/[slug]` | Baja | Landing con mejores ofertas por categoría. Emojis ya en BD |
-| 6 | **Búsqueda visible en móvil** | Baja | Navbar search oculto en `sm:`. Agregar ícono de búsqueda o barra visible en todas las pantallas |
 | 7 | **Sección "Más buscado hoy"** en home | Media | Top 6–8 productos más vistos en últimas 24h (requiere tabla `visitas` o analytics) |
-| 8 | **Alertas de precio para consumidor** | Media | Input: producto + precio objetivo. Avisa por email o WhatsApp cuando baja del umbral. Tabla `alertas_usuario` ya existe en BD |
 | 9 | **Comparar productos lado a lado** | Alta | Seleccionar 2–3 productos → tabla comparativa paralela (precios + histórico) |
 | 10 | **Trending / Historial de búsquedas** | Alta | Requiere autenticación consumidor o storage anónimo |
-| 11 | **Botón "Crear alerta" funcional** | Baja | Ya existe el botón en detalle — conectarlo a tabla `alertas_usuario` con email |
 
 #### Notas de implementación
 
@@ -613,4 +615,4 @@ httpx.post('https://api.github.com/repos/dtefacturacionnova-lgtm/PreciosSV/actio
 
 ---
 
-*Última actualización: 2026-05-29 — Sesión: Canasta inteligente (F4c) + fix build TS PromocionesAnalytica + Selectos scraper con paginación y BFS home*
+*Última actualización: 2026-05-29 — Sesión: F4c features #1-3 — páginas de categoría + búsqueda móvil + alertas de precio consumidor*
