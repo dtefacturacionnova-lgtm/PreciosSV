@@ -216,10 +216,14 @@ email_handle = await page.evaluate_handle("""() => {
 }""")
 ```
 
-**Resultados típicos por run:**
-- ~230–300 productos únicos
-- ~24–27 categorías visitadas
-- ~5–6 minutos de scraping + 2 min de guardado en Supabase
+**Resultados típicos por run (con paginación completa):**
+- ~1,500–2,000+ productos únicos
+- ~100–130 categorías visitadas (BFS desde home)
+- ~90–120 minutos de scraping (MAX_PAGES_PER_CAT=8 default en CI)
+- ~10 min de guardado en Supabase
+
+**Run local sin límite (SELECTOS_MAX_PAGES env var):**
+- Se puede aumentar para scrapear más páginas por categoría
 
 **Persistencia:** igual al VTEX pero sin `disponible` en `producto_variantes`
 (la columna `disponible` solo existe en `precios`, no en `producto_variantes`)
@@ -371,11 +375,20 @@ Mejoras priorizadas para el usuario final de la app pública.
 - **Botón Compartir** — Web Share API + fallback clipboard en tarjetas y detalle de producto
 - **Categoría clicable** — breadcrumb y tag de categoría en detalle filtran búsqueda
 
+#### ✅ Implementadas (sesión 2026-05-29)
+- **Canasta inteligente** — `/canasta` + `/api/canasta` + `CanastaContext` (localStorage)
+  - Botón "+" en TarjetaOferta, TarjetaProductoBusqueda y página de detalle
+  - Badge contador en Navbar
+  - Ranking de tiendas por precio total con % de cobertura
+  - Sugerencia de split (compra en 2 tiendas si ahorra ≥$0.50)
+  - Controles de cantidad, eliminar, vaciar canasta
+  - Estado persistido en localStorage
+- **Fix bug TS**: `PromocionesAnalytica.tsx` línea 177 — `c.catalogo_id` → `i` (index)
+
 #### ❌ Pendientes (ordenadas por impacto)
 
 | # | Feature | Complejidad | Notas |
 |---|---------|------------|-------|
-| 4 | **Canasta inteligente** | Media | Usuario agrega productos → app calcula qué tienda minimiza total. El diferenciador más fuerte — ningún comparador centroamericano lo tiene |
 | 5 | **Páginas de categoría** `/categoria/[slug]` | Baja | Landing con mejores ofertas por categoría. Emojis ya en BD |
 | 6 | **Búsqueda visible en móvil** | Baja | Navbar search oculto en `sm:`. Agregar ícono de búsqueda o barra visible en todas las pantallas |
 | 7 | **Sección "Más buscado hoy"** en home | Media | Top 6–8 productos más vistos en últimas 24h (requiere tabla `visitas` o analytics) |
@@ -600,4 +613,4 @@ httpx.post('https://api.github.com/repos/dtefacturacionnova-lgtm/PreciosSV/actio
 
 ---
 
-*Última actualización: 2026-05-18 — Sesión: F4 parcial (NLP cross-store + Simulador) + guard anti-duplicados scrapers + plan WhatsApp Meta + sucursales redefinida + PriceSmart pendiente*
+*Última actualización: 2026-05-29 — Sesión: Canasta inteligente (F4c) + fix build TS PromocionesAnalytica + Selectos scraper con paginación y BFS home*

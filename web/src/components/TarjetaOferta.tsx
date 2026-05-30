@@ -3,11 +3,14 @@
 import { useState } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { Share2, ExternalLink } from 'lucide-react'
+import { Share2, ExternalLink, ShoppingCart, Check } from 'lucide-react'
 import type { OfertaDelDia } from '@/types/database'
+import { useCanasta } from '@/lib/canasta'
 
 export default function TarjetaOferta({ oferta }: { oferta: OfertaDelDia }) {
-  const [copiado, setCopiado] = useState(false)
+  const [copiado,  setCopiado]  = useState(false)
+  const [agregado, setAgregado] = useState(false)
+  const { agregar, estaEnCanasta } = useCanasta()
 
   const {
     producto_id,
@@ -22,6 +25,14 @@ export default function TarjetaOferta({ oferta }: { oferta: OfertaDelDia }) {
     supermercado_color,
     url_producto,
   } = oferta
+
+  const handleAgregar = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    agregar({ id: producto_id, nombre: nombre_normalizado, imagen_url })
+    setAgregado(true)
+    setTimeout(() => setAgregado(false), 2000)
+  }
 
   const handleShare = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -121,6 +132,17 @@ export default function TarjetaOferta({ oferta }: { oferta: OfertaDelDia }) {
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
+
+            {/* Botón agregar a canasta */}
+            <button
+              onClick={handleAgregar}
+              title={agregado ? '¡Agregado!' : estaEnCanasta(producto_id) ? 'Ya en canasta — agregar más' : 'Agregar a canasta'}
+              className={`p-0.5 transition-colors ${
+                agregado ? 'text-blue-600' : 'text-slate-300 hover:text-blue-500'
+              }`}
+            >
+              {agregado ? <Check className="w-3.5 h-3.5" /> : <ShoppingCart className="w-3.5 h-3.5" />}
+            </button>
 
             {/* Botón compartir */}
             <button

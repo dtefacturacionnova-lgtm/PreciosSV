@@ -1,13 +1,15 @@
 'use client'
 
-import { Search, User, ChevronRight } from 'lucide-react'
+import { Search, User, ChevronRight, ShoppingCart } from 'lucide-react'
 import Link from 'next/link'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useCanasta } from '@/lib/canasta'
 
 export default function Navbar() {
   const [query, setQuery] = useState('')
   const router = useRouter()
+  const { totalItems } = useCanasta()
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault()
@@ -21,7 +23,6 @@ export default function Navbar() {
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2 flex-shrink-0">
           <div className="w-8 h-8 flex items-center justify-center">
-            {/* Ícono etiqueta de precio */}
             <svg viewBox="0 0 32 32" fill="none" className="w-8 h-8">
               <rect x="2" y="8" width="20" height="16" rx="3" fill="#1E40AF"/>
               <circle cx="8" cy="12" r="2" fill="white"/>
@@ -56,6 +57,21 @@ export default function Navbar() {
 
         {/* Acciones */}
         <div className="flex items-center gap-2 flex-shrink-0">
+
+          {/* Canasta */}
+          <Link
+            href="/canasta"
+            className="relative p-2 rounded-full text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            title="Mi canasta"
+          >
+            <ShoppingCart className="w-5 h-5" />
+            {totalItems > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-blue-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center leading-none">
+                {totalItems > 9 ? '9+' : totalItems}
+              </span>
+            )}
+          </Link>
+
           <Link
             href="/auth/login"
             className="hidden sm:flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-300

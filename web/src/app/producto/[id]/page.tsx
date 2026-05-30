@@ -4,10 +4,11 @@ import { useEffect, useState, use } from 'react'
 import Link from 'next/link'
 import {
   ArrowLeft, Bell, Package, RefreshCw,
-  ChevronRight, BarChart2, Share2
+  ChevronRight, BarChart2, Share2, ShoppingCart, Check,
 } from 'lucide-react'
 import ComparativaPrecios from '@/components/ComparativaPrecios'
 import HistoricoChart from '@/components/HistoricoChart'
+import { useCanasta } from '@/lib/canasta'
 
 interface PrecioSuper {
   supermercado_id: number
@@ -55,7 +56,9 @@ export default function ProductoPage({ params }: { params: Promise<{ id: string 
   const [tab, setTab] = useState<Tab>('comparativa')
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [copiado, setCopiado] = useState(false)
+  const [copiado,  setCopiado]  = useState(false)
+  const [agregado, setAgregado] = useState(false)
+  const { agregar, estaEnCanasta } = useCanasta()
 
   useEffect(() => {
     async function cargar() {
@@ -205,6 +208,27 @@ export default function ProductoPage({ params }: { params: Promise<{ id: string 
                   >
                     <Share2 className="w-4 h-4" />
                     <span className="hidden sm:inline">{copiado ? '¡Copiado!' : 'Compartir'}</span>
+                  </button>
+                  {/* Agregar a canasta */}
+                  <button
+                    onClick={() => {
+                      agregar({ id: producto.id, nombre: producto.nombre_normalizado, imagen_url: producto.imagen_url })
+                      setAgregado(true)
+                      setTimeout(() => setAgregado(false), 2500)
+                    }}
+                    title={agregado ? '¡Agregado!' : estaEnCanasta(producto.id) ? 'Ya en canasta — agregar más' : 'Agregar a canasta'}
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-full border text-sm font-medium transition-all ${
+                      agregado
+                        ? 'border-blue-300 bg-blue-50 text-blue-700'
+                        : estaEnCanasta(producto.id)
+                        ? 'border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {agregado ? <Check className="w-4 h-4" /> : <ShoppingCart className="w-4 h-4" />}
+                    <span className="hidden sm:inline">
+                      {agregado ? '¡Agregado!' : 'A la canasta'}
+                    </span>
                   </button>
                   {/* Crear alerta */}
                   <button className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors">

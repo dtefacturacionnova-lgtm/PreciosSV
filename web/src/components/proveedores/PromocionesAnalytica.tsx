@@ -174,7 +174,7 @@ function TablaCompetidores({ competidores }: { competidores: CompetidorStat[] })
           </thead>
           <tbody>
             {lista.map((c, i) => (
-              <tr key={`${c.cpId}-${c.catalogo_id}`} className={clsx('border-b border-slate-50', i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30')}>
+              <tr key={`${c.cpId}-${i}`} className={clsx('border-b border-slate-50', i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30')}>
                 <td className="px-4 py-3">
                   <p className="text-sm font-semibold text-slate-800">{c.nombre}</p>
                   {c.marca && <p className="text-xs text-slate-400">{c.marca}</p>}
