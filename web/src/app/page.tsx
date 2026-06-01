@@ -37,18 +37,23 @@ export default function HomePage() {
       const res = await fetch(`/api/ofertas?${params}`)
       if (!res.ok) throw new Error()
       const data = await res.json()
-      if (data.ofertas?.length > 0) {
+      if (data.ofertas !== undefined) {
+        // API respondió correctamente — mostrar lo que haya (puede ser vacío)
         setOfertas(data.ofertas)
         setUsandoMock(false)
       } else {
         throw new Error()
       }
     } catch {
-      const mockFiltrado = supermercado === 'todos'
-        ? MOCK_OFERTAS
-        : MOCK_OFERTAS.filter(o => o.supermercado_key === supermercado)
-      setOfertas(mockFiltrado)
-      setUsandoMock(true)
+      // Solo usar mock si la API falló por completo (error de red / servidor caído)
+      // y únicamente en el filtro "todos" para no confundir al usuario
+      if (supermercado === 'todos') {
+        setOfertas(MOCK_OFERTAS)
+        setUsandoMock(true)
+      } else {
+        setOfertas([])
+        setUsandoMock(false)
+      }
     } finally {
       setCargando(false)
     }
@@ -125,7 +130,12 @@ export default function HomePage() {
           </div>
         ) : ofertas.length === 0 ? (
           <div className="text-center py-16 text-slate-400">
-            <p className="text-lg">No hay ofertas activas para este filtro</p>
+            <p className="text-lg font-medium text-slate-500">Sin ofertas disponibles</p>
+            <p className="text-sm mt-1">
+              {filtroActivo === 'todos'
+                ? 'No hay ofertas activas en este momento.'
+                : `No encontramos ofertas activas de este supermercado hoy.`}
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">

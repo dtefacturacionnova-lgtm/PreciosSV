@@ -208,14 +208,32 @@ JS_EXTRAER_PRODUCTOS = """
         const productId = m ? m[1] : '';
 
         const precioEl    = box.querySelector('strong.precio');
-        const ofertaEl    = box.querySelector('.precio-oferta, .precio-tachado, .precio-anterior');
+        // Selectos muestra el precio anterior como "Antes: $X.XX" o tachado.
+        // Intentamos múltiples selectores para capturar el precio original.
+        const ofertaEl    = box.querySelector(
+            '.precio-oferta, .precio-tachado, .precio-anterior, ' +
+            '[class*="antes"], [class*="anterior"], [class*="tachado"], ' +
+            'del, s, .old-price, .precio-old, .precio-antes, ' +
+            'span[style*="line-through"], span[style*="text-decoration"]'
+        );
         const precio_raw  = precioEl ? precioEl.innerText.replace(/[^0-9.]/g,'').trim() : '';
-        const oferta_raw  = ofertaEl ? ofertaEl.innerText.replace(/[^0-9.]/g,'').trim() : '';
+        // Si hay elemento de precio anterior, extraer solo dígitos/puntos
+        let oferta_raw = ofertaEl ? ofertaEl.innerText.replace(/[^0-9.]/g,'').trim() : '';
+        // Fallback: buscar texto "Antes:" o "Precio anterior:" dentro del box
+        if (!oferta_raw) {
+            const boxText = box.innerText || '';
+            const antesMatch = boxText.match(/[Aa]ntes[:\s]+\$?([\d.]+)/);
+            if (antesMatch) oferta_raw = antesMatch[1];
+        }
 
         const imgEl     = box.querySelector('img');
         const imagenUrl = imgEl ? imgEl.src : '';
 
-        const enOferta = box.querySelector('[class*="oferta"],[class*="descuento"]') !== null;
+        // Detectar badge de oferta/descuento/ahorro
+        const enOferta = box.querySelector(
+            '[class*="oferta"],[class*="descuento"],[class*="ahorro"],[class*="badge"],' +
+            '[class*="promo"],[class*="rebaja"],[class*="sale"]'
+        ) !== null || oferta_raw !== '';
 
         const catLinks = Array.from(box.closest('body').querySelectorAll('a[href*="category="]'))
                          .map(a => a.getAttribute('href'))
