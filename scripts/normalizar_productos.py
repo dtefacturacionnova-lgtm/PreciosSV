@@ -45,7 +45,18 @@ if not GEMINI_KEY:
     sys.exit(1)
 
 import httpx
-import google.generativeai as genai  # pip install google-generativeai
+
+# Usar el nuevo SDK google-genai (reemplaza google-generativeai deprecado)
+try:
+    from google import genai as genai_new
+    gemini_client = genai_new.Client(api_key=GEMINI_KEY)
+    GEMINI_MODEL  = "gemini-2.0-flash-lite"   # modelo disponible en tier gratuito
+    USE_NEW_SDK   = True
+except ImportError:
+    import google.generativeai as genai_old
+    genai_old.configure(api_key=GEMINI_KEY)
+    gemini_client = genai_old.GenerativeModel("gemini-1.5-pro")
+    USE_NEW_SDK   = False
 
 REST_URL = f"{SUPABASE_URL}/rest/v1"
 HEADERS = {
@@ -55,20 +66,135 @@ HEADERS = {
     "Prefer":        "return=representation",
 }
 
-genai.configure(api_key=GEMINI_KEY)
-gemini = genai.GenerativeModel("gemini-1.5-flash")
-
 
 # ── Helpers de texto ──────────────────────────────────────────────────────────
 
+# Palabras de ruido que NO deben afectar el matching (Capa 2 del doc)
+RUIDO = {
+    'nuevo', 'nueva', 'especial', 'premium', 'super', 'ultra', 'extra',
+    'original', 'clasico', 'classic', 'natural', 'plus', 'max', 'pro',
+    'de', 'el', 'la', 'los', 'las', 'con', 'sin', 'para', 'en', 'y',
+    'pack', 'paquete', 'unidades', 'unidad', 'und', 'uds',
+}
+
+# Sinónimos de unidades (Capa 2 — Normalización de Unidades)
+UNIT_ALIASES = {
+    'gr': 'g', 'gramos': 'g', 'gramo': 'g',
+    'ml': 'ml', 'mililitros': 'ml', 'mililitro': 'ml',
+    'lt': 'l', 'lts': 'l', 'litros': 'l', 'litro': 'l',
+    'kg': 'kg', 'kgs': 'kg', 'kilogramos': 'kg', 'kilogramo': 'kg',
+    'oz': 'oz', 'onzas': 'oz', 'onza': 'oz',
+    'lb': 'lb', 'lbs': 'lb', 'libras': 'lb', 'libra': 'lb',
+}
+
+# Convertir todo a gramos/ml para comparar cantidades entre empaques
+UNIT_TO_BASE = {
+    'g': 1, 'kg': 1000, 'lb': 453.6, 'oz': 28.35,
+    'ml': 1, 'l': 1000,
+}
+
+
 def normalizar(nombre: str) -> str:
-    n = nombre.lower()
+    """Limpieza básica — igual que antes."""
+    n = (nombre or '').lower()
     n = re.sub(r'[^a-záéíóúñ0-9 ]', ' ', n)
     n = re.sub(r'\s+', ' ', n).strip()
     return n
 
 
+def normalizar_unidad(u: str) -> str:
+    return UNIT_ALIASES.get(u.lower(), u.lower())
+
+
+def extraer_atributos(nombre: str, marca: str | None = None) -> dict:
+    """
+    Capa 2 del documento: extrae atributos estructurados del nombre.
+    Retorna: {tokens_limpios, cantidad_base, unidad_base, pack}
+
+    Ejemplos:
+      "Jabón Dove Original 3 Pack 270g"  → cantidad_base=90, unidad=g, pack=3
+      "JABON DOVE ORIGINAL 90 g"         → cantidad_base=90, unidad=g, pack=1
+      "Aceite Borges 500 ml"             → cantidad_base=500, unidad=ml, pack=1
+      "Leche LALA 1 L"                   → cantidad_base=1000, unidad=ml, pack=1
+    """
+    texto = normalizar(nombre)
+
+    # Extraer cantidad total y unidad: "270g", "1.5 l", "500ml"
+    m_qty = re.search(r'(\d+[\.,]?\d*)\s*(g|gr|kg|ml|l|lt|lts|litro|litros|oz|lb|lbs)\b', texto)
+    cantidad_total = float(m_qty.group(1).replace(',', '.')) if m_qty else None
+    unidad = normalizar_unidad(m_qty.group(2)) if m_qty else None
+
+    # Extraer pack: "3 pack", "x3", "3x", "3 unidades", "6pack"
+    m_pack = re.search(
+        r'(?:^|\s)(\d+)\s*(?:pack|packs|x|unidades?|und\.?|uds\.?)|'
+        r'(?:^|\s)(\d+)\s*x\s*\d|'
+        r'(\d+)\s*(?:pack)',
+        texto
+    )
+    pack = 1
+    if m_pack:
+        pack = int(next(g for g in m_pack.groups() if g))
+
+    # Cantidad por unidad base
+    cantidad_base = None
+    if cantidad_total and unidad:
+        factor = UNIT_TO_BASE.get(unidad, 1)
+        cantidad_base = round(cantidad_total * factor / pack, 2)
+        # Normalizar ml→l si > 1000
+        if unidad == 'ml' and cantidad_base >= 1000:
+            cantidad_base /= 1000
+            unidad = 'l'
+
+    # Tokens limpios: quitar ruido, cantidades y unidades ya extraídas
+    tokens = [t for t in texto.split()
+              if t not in RUIDO
+              and not re.match(r'^\d+[\.,]?\d*$', t)
+              and t not in UNIT_ALIASES
+              and t not in UNIT_TO_BASE]
+
+    # Quitar nombre de marca de los tokens si la conocemos
+    if marca:
+        marca_norm = normalizar(marca).split()
+        tokens = [t for t in tokens if t not in marca_norm]
+
+    return {
+        'tokens':         tokens,
+        'cantidad_base':  cantidad_base,
+        'unidad_base':    unidad,
+        'pack':           pack,
+    }
+
+
+def similitud_estructurada(a: dict, b: dict, attr_a: dict, attr_b: dict) -> float:
+    """
+    Capa 2 mejorada: combina similitud de tokens con comparación de atributos.
+
+    Penaliza fuertemente si la cantidad base difiere (distinta presentación).
+    Bonifica si marca y tipo coinciden.
+    """
+    # Score base: Jaccard sobre tokens limpios
+    ta, tb = set(attr_a['tokens']), set(attr_b['tokens'])
+    jac = len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
+
+    # Comparar cantidades base
+    ca, cb = attr_a['cantidad_base'], attr_b['cantidad_base']
+    ua, ub = attr_a['unidad_base'], attr_b['unidad_base']
+
+    qty_score = 0.0
+    if ca and cb and ua and ub:
+        if ua == ub:
+            ratio = min(ca, cb) / max(ca, cb) if max(ca, cb) > 0 else 1.0
+            qty_score = ratio  # 1.0 si iguales, <1 si difieren
+        # Si unidades incompatibles (g vs ml) → penalizar
+    elif not ca and not cb:
+        qty_score = 0.5  # ambos sin cantidad → neutral
+
+    # Score combinado: 60% tokens + 40% cantidad
+    return 0.60 * jac + 0.40 * qty_score
+
+
 def jaccard(a: str, b: str) -> float:
+    """Jaccard clásico sobre tokens — mantenido para compatibilidad."""
     wa, wb = set(a.split()), set(b.split())
     if not wa or not wb:
         return 0.0
@@ -192,15 +318,22 @@ async def cargar_candidatos(client: httpx.AsyncClient) -> list[dict]:
 
 def encontrar_pares(productos: list[dict]) -> list[tuple[dict, dict]]:
     """
-    Devuelve pares candidatos con Jaccard >= 0.35.
+    Capa 2 mejorada: matching estructurado Selectos × VTEX.
 
-    Solo empareja productos del Grupo A (Selectos sin EAN) contra
-    productos del Grupo B (VTEX). Nunca A-A ni B-B.
-    Límite de 500 pares por score para no sobrecargar Gemini.
+    Aplica la estrategia del documento de investigación:
+    - Normalización de unidades ('gr'='g', 'lt'='l')
+    - Extracción de pack ('3 Pack 270g' → 1 unidad de 90g)
+    - Eliminación de ruido ('nuevo', 'especial', 'pack', etc.)
+    - Similitud combinada: 60% tokens limpios + 40% cantidad base
+    - Umbral: score >= 0.40 (más preciso que Jaccard simple)
     """
     grupo_a = [p for p in productos if p.get("_grupo") == "A"]
     grupo_b = [p for p in productos if p.get("_grupo") == "B"]
     print(f"      Cruzando {len(grupo_a)} Selectos x {len(grupo_b)} VTEX...")
+
+    # Pre-calcular atributos estructurados
+    attrs_a = {p["id"]: extraer_atributos(p["nombre"] or "", p.get("marca")) for p in grupo_a}
+    attrs_b = {p["id"]: extraer_atributos(p["nombre"] or "", p.get("marca")) for p in grupo_b}
 
     pares_scored: list[tuple[float, dict, dict]] = []
 
@@ -208,38 +341,45 @@ def encontrar_pares(productos: list[dict]) -> list[tuple[dict, dict]]:
         sa = set(a["supermercados"])
         if not sa:
             continue
-        na = normalizar(a["nombre"] or "")
-        pa = na.split()
-        if not pa:
+        attr_a = attrs_a[a["id"]]
+        tokens_a = attr_a["tokens"]
+        if not tokens_a:
             continue
+        first_a = tokens_a[0]
 
         for b in grupo_b:
             sb = set(b["supermercados"])
-            if not sb:
-                continue
-            if sa & sb:
-                continue  # comparten supermercado → producto distinto
+            if not sb or (sa & sb):
+                continue  # mismo supermercado → producto distinto
 
-            nb = normalizar(b["nombre"] or "")
-            pb = nb.split()
-            if not pb:
-                continue
-
-            # Primera palabra debe coincidir (filtro rápido)
-            if pa[0] != pb[0]:
-                continue
-
-            # Misma marca si ambos la tienen
+            # Misma marca (si ambos la tienen)
             if a.get("marca") and b.get("marca"):
                 if normalizar(a["marca"]) != normalizar(b["marca"]):
                     continue
 
-            sim = jaccard(na, nb)
-            if sim >= 0.35:
+            attr_b = attrs_b[b["id"]]
+            tokens_b = attr_b["tokens"]
+            if not tokens_b:
+                continue
+
+            # Filtro rápido: primera palabra del tipo de producto debe coincidir
+            if first_a != tokens_b[0]:
+                continue
+
+            sim = similitud_estructurada(a, b, attr_a, attr_b)
+            if sim >= 0.40:
                 pares_scored.append((sim, a, b))
 
     pares_scored.sort(key=lambda x: -x[0])
-    return [(a, b) for _, a, b in pares_scored[:500]]
+    top = pares_scored[:500]
+
+    # Log de cantidad base para diagnóstico
+    qty_matches = sum(1 for s, a, b in top
+                      if attrs_a[a["id"]]["cantidad_base"] and attrs_b[b["id"]]["cantidad_base"]
+                      and abs(attrs_a[a["id"]]["cantidad_base"] - attrs_b[b["id"]]["cantidad_base"]) < 1)
+    print(f"      De {len(top)} pares: {qty_matches} con cantidad base idéntica")
+
+    return [(a, b) for _, a, b in top]
 
 
 # ── Fase 3: confirmación con Gemini ──────────────────────────────────────────
@@ -269,19 +409,32 @@ async def confirmar_con_gemini(pares: list[tuple[dict, dict]]) -> list[tuple[dic
 
         try:
             loop = asyncio.get_event_loop()
-            resp = await loop.run_in_executor(
-                None, lambda p=prompt: gemini.generate_content(p)
-            )
-            for line in resp.text.strip().splitlines():
+            if USE_NEW_SDK:
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda p=prompt: gemini_client.models.generate_content(
+                        model=GEMINI_MODEL, contents=p
+                    )
+                )
+                texto = resp.text
+            else:
+                resp = await loop.run_in_executor(
+                    None, lambda p=prompt: gemini_client.generate_content(p)
+                )
+                texto = resp.text
+
+            si_count = 0
+            for line in texto.strip().splitlines():
                 parts = line.strip().split()
                 if len(parts) >= 2:
                     try:
                         idx = int(parts[0]) - 1
                         if 0 <= idx < len(batch) and parts[1].upper() == "SI":
                             confirmados.append(batch[idx])
+                            si_count += 1
                     except ValueError:
                         pass
-            print(f"  Batch {batch_num + 1}/{total_batches}: {sum(1 for l in resp.text.splitlines() if 'SI' in l.upper())} confirmados")
+            print(f"  Batch {batch_num + 1}/{total_batches}: {si_count} confirmados")
         except Exception as e:
             print(f"  WARN batch {batch_num + 1}: {e}")
 
@@ -373,9 +526,14 @@ async def main(dry_run: bool) -> None:
         # Mostrar los pares encontrados para revisión
         print("\n  Pares candidatos encontrados:")
         for i, (a, b) in enumerate(pares, 1):
-            sim = jaccard(normalizar(a["nombre"] or ""), normalizar(b["nombre"] or ""))
-            print(f"  {i:2d}. [{sim:.2f}] \"{a['nombre']}\" (Selectos id={a['id']})")
-            print(f"        vs \"{b['nombre']}\" (VTEX id={b['id']})")
+            attr_a = extraer_atributos(a["nombre"] or "", a.get("marca"))
+            attr_b = extraer_atributos(b["nombre"] or "", b.get("marca"))
+            sim = similitud_estructurada(a, b, attr_a, attr_b)
+            ca = f"{attr_a['cantidad_base']}{attr_a['unidad_base']}" if attr_a['cantidad_base'] else "?"
+            cb = f"{attr_b['cantidad_base']}{attr_b['unidad_base']}" if attr_b['cantidad_base'] else "?"
+            print(f"  {i:2d}. [sim={sim:.2f}] Selectos id={a['id']} ({ca}/und) | VTEX id={b['id']} ({cb}/und)")
+            print(f"        A: \"{a['nombre']}\"")
+            print(f"        B: \"{b['nombre']}\"")
 
         print(f"\n[3/4] Confirmando con Gemini ({len(pares)} pares)...")
         confirmados = await confirmar_con_gemini(pares)
