@@ -56,7 +56,7 @@ HEADERS = {
 }
 
 genai.configure(api_key=GEMINI_KEY)
-gemini = genai.GenerativeModel("gemini-1.5-flash-latest")
+gemini = genai.GenerativeModel("gemini-1.5-flash")
 
 
 # ── Helpers de texto ──────────────────────────────────────────────────────────
@@ -97,71 +97,146 @@ async def rest_delete(client: httpx.AsyncClient, table: str, filtro: dict) -> bo
 
 # ── Fase 1: cargar candidatos ─────────────────────────────────────────────────
 
+SELECTOS_ID = 1  # supermercado_id de Súper Selectos
+
 async def cargar_candidatos(client: httpx.AsyncClient) -> list[dict]:
-    """Productos sin EAN con su lista de supermercados donde aparecen."""
-    productos = await rest_get(client, "productos", {
-        "select":  "id,nombre,marca",
-        "ean":     "is.null",
-        "activo":  "eq.true",
-        "order":   "id.asc",
-        "limit":   "2000",
-    })
-    if not productos:
-        return []
+    """
+    Carga DOS grupos de productos y los combina:
 
-    ids = [str(p["id"]) for p in productos]
+    Grupo A — Productos Selectos sin EAN (solo aparecen en Selectos):
+        Creados por el scraper de Selectos sin poder matchear por EAN.
+        Son candidatos a ser fusionados con su equivalente VTEX.
+
+    Grupo B — Productos VTEX con EAN (Walmart / Don Juan / Maxi):
+        Productos canónicos que YA tienen EAN. Se usan como destino del match.
+
+    El normalizador busca pares (A_i, B_j) con nombres similares y los
+    envía a Gemini. Si confirma que son el mismo producto, la variante
+    de Selectos se reasigna al producto VTEX y el duplicado se elimina.
+    """
     CHUNK = 400
-    super_por_prod: dict[int, set[int]] = {}
 
-    for i in range(0, len(ids), CHUNK):
-        chunk = ids[i:i + CHUNK]
+    # ── Grupo A: productos de Selectos sin EAN ──────────────────────────────
+    # Primero, variantes activas de Selectos → sus producto_ids
+    sel_variantes = await rest_get(client, "producto_variantes", {
+        "select":          "producto_id",
+        "supermercado_id": f"eq.{SELECTOS_ID}",
+        "activo":          "eq.true",
+        "limit":           "15000",
+    })
+    sel_prod_ids = list({v["producto_id"] for v in sel_variantes})
+    print(f"      Variantes Selectos: {len(sel_prod_ids)} productos únicos")
+
+    # Cargar esos productos que además NO tienen EAN
+    grupo_a: list[dict] = []
+    for i in range(0, len(sel_prod_ids), CHUNK):
+        chunk = [str(x) for x in sel_prod_ids[i:i + CHUNK]]
+        rows = await rest_get(client, "productos", {
+            "select": "id,nombre,marca,ean",
+            "id":     f"in.({','.join(chunk)})",
+            "ean":    "is.null",
+            "activo": "eq.true",
+        })
+        grupo_a.extend(rows)
+    print(f"      Grupo A (Selectos sin EAN): {len(grupo_a)} productos")
+
+    # ── Grupo B: productos VTEX con EAN ──────────────────────────────────────
+    # Variantes de Walmart/Don Juan/Maxi → sus producto_ids
+    vtex_variantes = await rest_get(client, "producto_variantes", {
+        "select":          "producto_id",
+        "supermercado_id": f"in.(2,3,4)",
+        "activo":          "eq.true",
+        "limit":           "15000",
+    })
+    vtex_prod_ids = list({v["producto_id"] for v in vtex_variantes})
+
+    grupo_b: list[dict] = []
+    for i in range(0, len(vtex_prod_ids), CHUNK):
+        chunk = [str(x) for x in vtex_prod_ids[i:i + CHUNK]]
+        rows = await rest_get(client, "productos", {
+            "select": "id,nombre,marca,ean",
+            "id":     f"in.({','.join(chunk)})",
+            "activo": "eq.true",
+        })
+        grupo_b.extend(rows)
+    print(f"      Grupo B (VTEX con/sin EAN): {len(grupo_b)} productos")
+
+    # ── Asignar supermercados a cada producto ─────────────────────────────────
+    todos_ids = [str(p["id"]) for p in grupo_a + grupo_b]
+    super_por_prod: dict[int, set[int]] = {}
+    for i in range(0, len(todos_ids), CHUNK):
+        chunk = todos_ids[i:i + CHUNK]
         variantes = await rest_get(client, "producto_variantes", {
-            "select":       "producto_id,supermercado_id",
-            "producto_id":  f"in.({','.join(chunk)})",
-            "activo":       "eq.true",
+            "select":      "producto_id,supermercado_id",
+            "producto_id": f"in.({','.join(chunk)})",
+            "activo":      "eq.true",
         })
         for v in variantes:
             pid = v["producto_id"]
             super_por_prod.setdefault(pid, set()).add(v["supermercado_id"])
 
-    for p in productos:
+    for p in grupo_a + grupo_b:
         p["supermercados"] = list(super_por_prod.get(p["id"], set()))
-    return productos
+        p["_grupo"] = "A" if p in grupo_a else "B"
+
+    # Marcar correctamente el grupo después de iterar
+    ids_a = {p["id"] for p in grupo_a}
+    for p in grupo_a + grupo_b:
+        p["_grupo"] = "A" if p["id"] in ids_a else "B"
+
+    # Retornar solo grupos con supermercados asignados
+    return [p for p in grupo_a + grupo_b if p["supermercados"]]
 
 
 # ── Fase 2: pre-filtro por similitud ─────────────────────────────────────────
 
 def encontrar_pares(productos: list[dict]) -> list[tuple[dict, dict]]:
     """
-    Devuelve pares candidatos con Jaccard >= 0.35 que están en supermercados
-    diferentes (compartir supermercado descarta el merge).
-    Límite de 500 pares para no sobrecargar Gemini.
+    Devuelve pares candidatos con Jaccard >= 0.35.
+
+    Solo empareja productos del Grupo A (Selectos sin EAN) contra
+    productos del Grupo B (VTEX). Nunca A-A ni B-B.
+    Límite de 500 pares por score para no sobrecargar Gemini.
     """
+    grupo_a = [p for p in productos if p.get("_grupo") == "A"]
+    grupo_b = [p for p in productos if p.get("_grupo") == "B"]
+    print(f"      Cruzando {len(grupo_a)} Selectos x {len(grupo_b)} VTEX...")
+
     pares_scored: list[tuple[float, dict, dict]] = []
 
-    for a, b in combinations(productos, 2):
-        sa, sb = set(a["supermercados"]), set(b["supermercados"])
-        if not sa or not sb:
+    for a in grupo_a:
+        sa = set(a["supermercados"])
+        if not sa:
             continue
-        if sa & sb:
-            continue  # mismo supermercado → son distintos productos
-
-        na = normalizar(a["nombre"])
-        nb = normalizar(b["nombre"])
+        na = normalizar(a["nombre"] or "")
         pa = na.split()
-        pb = nb.split()
+        if not pa:
+            continue
 
-        if not pa or not pb or pa[0] != pb[0]:
-            continue  # primera palabra distinta → descartado
+        for b in grupo_b:
+            sb = set(b["supermercados"])
+            if not sb:
+                continue
+            if sa & sb:
+                continue  # comparten supermercado → producto distinto
 
-        # Misma marca si ambos tienen marca
-        if a.get("marca") and b.get("marca"):
-            if normalizar(a["marca"]) != normalizar(b["marca"]):
+            nb = normalizar(b["nombre"] or "")
+            pb = nb.split()
+            if not pb:
                 continue
 
-        sim = jaccard(na, nb)
-        if sim >= 0.35:
-            pares_scored.append((sim, a, b))
+            # Primera palabra debe coincidir (filtro rápido)
+            if pa[0] != pb[0]:
+                continue
+
+            # Misma marca si ambos la tienen
+            if a.get("marca") and b.get("marca"):
+                if normalizar(a["marca"]) != normalizar(b["marca"]):
+                    continue
+
+            sim = jaccard(na, nb)
+            if sim >= 0.35:
+                pares_scored.append((sim, a, b))
 
     pares_scored.sort(key=lambda x: -x[0])
     return [(a, b) for _, a, b in pares_scored[:500]]
@@ -287,13 +362,20 @@ async def main(dry_run: bool) -> None:
             print("      Sin candidatos suficientes. Fin.")
             return
 
-        print("\n[2/4] Pre-filtrando pares similares (Jaccard ≥ 0.35)...")
+        print("\n[2/4] Pre-filtrando pares similares (Jaccard >= 0.35)...")
         pares = encontrar_pares(productos)
         print(f"      {len(pares)} pares candidatos")
 
         if not pares:
             print("      Sin pares candidatos. Fin.")
             return
+
+        # Mostrar los pares encontrados para revisión
+        print("\n  Pares candidatos encontrados:")
+        for i, (a, b) in enumerate(pares, 1):
+            sim = jaccard(normalizar(a["nombre"] or ""), normalizar(b["nombre"] or ""))
+            print(f"  {i:2d}. [{sim:.2f}] \"{a['nombre']}\" (Selectos id={a['id']})")
+            print(f"        vs \"{b['nombre']}\" (VTEX id={b['id']})")
 
         print(f"\n[3/4] Confirmando con Gemini ({len(pares)} pares)...")
         confirmados = await confirmar_con_gemini(pares)
