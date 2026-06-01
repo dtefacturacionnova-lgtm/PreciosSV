@@ -539,8 +539,50 @@ async def main(dry_run: bool) -> None:
         confirmados = await confirmar_con_gemini(pares)
         print(f"      {len(confirmados)} duplicados confirmados")
 
+        # Guardar TODOS los pares (confirmados y no confirmados) en mapeo_selectos
+        # para que el usuario los revise en el dashboard — validado=True solo los de Gemini
+        print(f"\n  Guardando sugerencias en mapeo_selectos...")
+        pares_set = {(a["id"], b["id"]) for a, b in confirmados}
+        guardados = 0
+        for a, b in pares:
+            # Obtener SKU de Selectos para el mapeo
+            r_sku = await client.get(
+                f"{SUPABASE_URL}/rest/v1/producto_variantes",
+                headers=HEADERS,
+                params={"producto_id": f"eq.{a['id']}", "supermercado_id": "eq.1",
+                        "select": "sku_local", "limit": "1"},
+            )
+            if r_sku.status_code != 200 or not r_sku.json():
+                continue
+            sku = r_sku.json()[0]["sku_local"]
+            attr_a = extraer_atributos(a["nombre"] or "", a.get("marca"))
+            attr_b = extraer_atributos(b["nombre"] or "", b.get("marca"))
+            sim = similitud_estructurada(a, b, attr_a, attr_b)
+            es_confirmado = (a["id"], b["id"]) in pares_set
+            body = {
+                "selectos_sku": sku,
+                "producto_id":  b["id"],
+                "confianza":    round(sim, 3),
+                "metodo":       "nlp",
+                "validado":     es_confirmado and not dry_run,
+                "notas":        f"NLP: \"{a['nombre']}\" ↔ \"{b['nombre']}\" (sim={sim:.2f})",
+            }
+            if not dry_run:
+                r_ins = await client.post(
+                    f"{SUPABASE_URL}/rest/v1/mapeo_selectos",
+                    headers={**HEADERS, "Prefer": "resolution=ignore-duplicates"},
+                    json=body,
+                )
+                if r_ins.status_code in (200, 201):
+                    guardados += 1
+            else:
+                print(f"    [dry-run] Sugerencia: sku={sku} → prod_id={b['id']} "
+                      f"validado={'SI' if es_confirmado else 'PENDIENTE'}")
+                guardados += 1
+        print(f"  {guardados} sugerencias {'simuladas' if dry_run else 'guardadas en mapeo_selectos'}")
+
         if not confirmados:
-            print("      Sin duplicados. Fin.")
+            print("  Sin fusiones automáticas. Revisa sugerencias pendientes en el dashboard.")
             return
 
         print(f"\n[4/4] Fusionando {len(confirmados)} pares...")

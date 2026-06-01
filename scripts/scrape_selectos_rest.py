@@ -698,21 +698,60 @@ async def _filtrar_ya_insertados(
     return [p for p in precios_batch if p["variante_id"] not in ya_insertados]
 
 
+async def precargar_mapeo(client: httpx.AsyncClient) -> dict[str, int]:
+    """
+    Carga la tabla mapeo_selectos (solo validados=true, rechazado=false).
+    Retorna {selectos_sku → producto_id canónico}.
+    """
+    mapeo: dict[str, int] = {}
+    try:
+        r = await client.get(
+            f"{REST_URL}/mapeo_selectos",
+            headers=HEADERS,
+            params={
+                "select":    "selectos_sku,producto_id",
+                "validado":  "eq.true",
+                "rechazado": "eq.false",
+                "limit":     "10000",
+            },
+        )
+        if r.status_code == 200:
+            for row in r.json():
+                mapeo[str(row["selectos_sku"])] = row["producto_id"]
+            print(f"  -> Mapeo Selectos cargado: {len(mapeo)} entradas validadas")
+        else:
+            print(f"  WARN: mapeo_selectos no disponible aún ({r.status_code}) — se usará NLP")
+    except Exception as e:
+        print(f"  WARN: error cargando mapeo: {e}")
+    return mapeo
+
+
 async def guardar_en_supabase(productos: list[dict], super_id: int, client: httpx.AsyncClient) -> dict:
     print("  -> Pre-cargando cache...")
     sku_map, ean_map = await precargar_variantes(client, super_id)
     nombre_map = await precargar_nombres(client)
+    mapeo_validado = await precargar_mapeo(client)  # ← Capa 1b: mapeo manual validado
 
-    nuevos = actualizados = errores = 0
+    nuevos = actualizados = errores = mapeo_hits = 0
     ahora = datetime.now(timezone.utc).isoformat()
     precios_batch: list[dict] = []
 
     for prod in productos:
         try:
             producto_id: Optional[int] = None
+            sku = prod.get("sku_local") or ""
             ean = prod.get("ean")
-            if ean and ean in ean_map:
+
+            # ── Capa 1b: mapeo manual validado (prioridad máxima) ─────────
+            if sku and sku in mapeo_validado:
+                producto_id = mapeo_validado[sku]
+                mapeo_hits += 1
+
+            # ── Capa 1a: EAN exacto ───────────────────────────────────────
+            if not producto_id and ean and ean in ean_map:
                 producto_id = ean_map[ean]
+
+            # ── Capa 2: nombre normalizado ────────────────────────────────
             if not producto_id:
                 nn = prod.get("nombre_norm", "")
                 if nn and nn in nombre_map:
@@ -797,7 +836,9 @@ async def guardar_en_supabase(productos: list[dict], super_id: int, client: http
         if r.status_code not in (200, 201):
             print(f"  WARN: precios error {r.status_code}")
 
-    return {"nuevos": nuevos, "actualizados": actualizados, "errores": errores}
+    if mapeo_hits:
+        print(f"  -> Mapeo validado: {mapeo_hits} productos linkeados directamente (sin NLP)")
+    return {"nuevos": nuevos, "actualizados": actualizados, "errores": errores, "mapeo_hits": mapeo_hits}
 
 
 async def refrescar_vista(client: httpx.AsyncClient) -> None:
