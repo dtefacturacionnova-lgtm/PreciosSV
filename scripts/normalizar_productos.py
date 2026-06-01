@@ -223,69 +223,107 @@ async def rest_delete(client: httpx.AsyncClient, table: str, filtro: dict) -> bo
 
 # ── Fase 1: cargar candidatos ─────────────────────────────────────────────────
 
-SELECTOS_ID = 1  # supermercado_id de Súper Selectos
-
 async def cargar_candidatos(client: httpx.AsyncClient) -> list[dict]:
     """
-    Carga DOS grupos de productos y los combina:
+    Carga candidatos para matching cross-store generalizado.
 
-    Grupo A — Productos Selectos sin EAN (solo aparecen en Selectos):
-        Creados por el scraper de Selectos sin poder matchear por EAN.
-        Son candidatos a ser fusionados con su equivalente VTEX.
+    Grupo A — Productos SIN EAN de CUALQUIER tienda, excluyendo los que
+        ya tienen un mapeo validado en mapeo_sku. Son candidatos a match.
 
-    Grupo B — Productos VTEX con EAN (Walmart / Don Juan / Maxi):
-        Productos canónicos que YA tienen EAN. Se usan como destino del match.
+    Grupo B — Productos CON EAN (referencia canónica). El normalizador
+        busca si alguno de Grupo A es el mismo producto.
 
-    El normalizador busca pares (A_i, B_j) con nombres similares y los
-    envía a Gemini. Si confirma que son el mismo producto, la variante
-    de Selectos se reasigna al producto VTEX y el duplicado se elimina.
+    El resultado aplica para Selectos, PriceSmart, o cualquier tienda
+    futura que no publique EANs en su sitio web.
     """
     CHUNK = 400
 
-    # ── Grupo A: productos de Selectos sin EAN ──────────────────────────────
-    # Primero, variantes activas de Selectos → sus producto_ids
-    sel_variantes = await rest_get(client, "producto_variantes", {
-        "select":          "producto_id",
-        "supermercado_id": f"eq.{SELECTOS_ID}",
-        "activo":          "eq.true",
-        "limit":           "15000",
+    # ── Cargar SKUs ya mapeados (no procesar lo ya validado) ────────────────
+    mapeados = await rest_get(client, "mapeo_sku", {
+        "select":    "supermercado_id,sku_local",
+        "validado":  "eq.true",
+        "rechazado": "eq.false",
+        "limit":     "50000",
     })
-    sel_prod_ids = list({v["producto_id"] for v in sel_variantes})
-    print(f"      Variantes Selectos: {len(sel_prod_ids)} productos únicos")
+    skus_mapeados: set[str] = {f"{r['supermercado_id']}:{r['sku_local']}" for r in mapeados}
+    print(f"      SKUs ya mapeados (excluidos): {len(skus_mapeados)}")
 
-    # Cargar esos productos que además NO tienen EAN
-    grupo_a: list[dict] = []
-    for i in range(0, len(sel_prod_ids), CHUNK):
-        chunk = [str(x) for x in sel_prod_ids[i:i + CHUNK]]
+    # ── Grupo A: productos sin EAN de cualquier tienda ───────────────────────
+    # Buscar variantes sin EAN en su producto canónico
+    todas_variantes = await rest_get(client, "producto_variantes", {
+        "select":  "producto_id,supermercado_id,sku_local",
+        "activo":  "eq.true",
+        "limit":   "50000",
+    })
+    # Agrupar por producto_id → set de supermercados
+    prod_supers: dict[int, set[int]] = {}
+    prod_sku:    dict[int, tuple[int, str]] = {}  # prod_id → (super_id, sku)
+    for v in todas_variantes:
+        pid = v["producto_id"]
+        sid = v["supermercado_id"]
+        sku = v["sku_local"]
+        prod_supers.setdefault(pid, set()).add(sid)
+        prod_sku.setdefault(pid, (sid, sku))
+
+    # Cargar todos los productos sin EAN
+    sin_ean_prods: list[dict] = []
+    offset = 0
+    while True:
         rows = await rest_get(client, "productos", {
             "select": "id,nombre,marca,ean",
-            "id":     f"in.({','.join(chunk)})",
             "ean":    "is.null",
             "activo": "eq.true",
+            "order":  "id.asc",
+            "limit":  str(CHUNK),
+            "offset": str(offset),
         })
-        grupo_a.extend(rows)
-    print(f"      Grupo A (Selectos sin EAN): {len(grupo_a)} productos")
+        if not rows:
+            break
+        sin_ean_prods.extend(rows)
+        offset += CHUNK
+        if len(rows) < CHUNK:
+            break
 
-    # ── Grupo B: productos VTEX con EAN ──────────────────────────────────────
-    # Variantes de Walmart/Don Juan/Maxi → sus producto_ids
-    vtex_variantes = await rest_get(client, "producto_variantes", {
-        "select":          "producto_id",
-        "supermercado_id": f"in.(2,3,4)",
-        "activo":          "eq.true",
-        "limit":           "15000",
-    })
-    vtex_prod_ids = list({v["producto_id"] for v in vtex_variantes})
+    grupo_a: list[dict] = []
+    for p in sin_ean_prods:
+        pid = p["id"]
+        supers = prod_supers.get(pid, set())
+        if not supers:
+            continue
+        sid, sku = prod_sku.get(pid, (0, ""))
+        # Excluir si ya tiene mapeo validado
+        if f"{sid}:{sku}" in skus_mapeados:
+            continue
+        p["supermercados"] = list(supers)
+        p["_super_id"]     = sid
+        p["_sku"]          = sku
+        p["_grupo"]        = "A"
+        grupo_a.append(p)
+    print(f"      Grupo A (sin EAN, sin mapeo): {len(grupo_a)} productos de cualquier tienda")
 
+    # ── Grupo B: productos CON EAN (referencia canónica) ─────────────────────
     grupo_b: list[dict] = []
-    for i in range(0, len(vtex_prod_ids), CHUNK):
-        chunk = [str(x) for x in vtex_prod_ids[i:i + CHUNK]]
+    offset = 0
+    while True:
         rows = await rest_get(client, "productos", {
             "select": "id,nombre,marca,ean",
-            "id":     f"in.({','.join(chunk)})",
+            "ean":    "not.is.null",
             "activo": "eq.true",
+            "order":  "id.asc",
+            "limit":  str(CHUNK),
+            "offset": str(offset),
         })
+        if not rows:
+            break
+        for p in rows:
+            pid = p["id"]
+            p["supermercados"] = list(prod_supers.get(pid, set()))
+            p["_grupo"]        = "B"
         grupo_b.extend(rows)
-    print(f"      Grupo B (VTEX con/sin EAN): {len(grupo_b)} productos")
+        offset += CHUNK
+        if len(rows) < CHUNK:
+            break
+    print(f"      Grupo B (con EAN, referencia): {len(grupo_b)} productos")
 
     # ── Asignar supermercados a cada producto ─────────────────────────────────
     todos_ids = [str(p["id"]) for p in grupo_a + grupo_b]
@@ -539,47 +577,43 @@ async def main(dry_run: bool) -> None:
         confirmados = await confirmar_con_gemini(pares)
         print(f"      {len(confirmados)} duplicados confirmados")
 
-        # Guardar TODOS los pares (confirmados y no confirmados) en mapeo_selectos
-        # para que el usuario los revise en el dashboard — validado=True solo los de Gemini
-        print(f"\n  Guardando sugerencias en mapeo_selectos...")
+        # Guardar sugerencias en mapeo_sku (tabla generalizada para cualquier tienda)
+        # validado=True solo si Gemini lo confirmó; el resto queda PENDIENTE para el usuario
+        print(f"\n  Guardando sugerencias en mapeo_sku...")
         pares_set = {(a["id"], b["id"]) for a, b in confirmados}
         guardados = 0
         for a, b in pares:
-            # Obtener SKU de Selectos para el mapeo
-            r_sku = await client.get(
-                f"{SUPABASE_URL}/rest/v1/producto_variantes",
-                headers=HEADERS,
-                params={"producto_id": f"eq.{a['id']}", "supermercado_id": "eq.1",
-                        "select": "sku_local", "limit": "1"},
-            )
-            if r_sku.status_code != 200 or not r_sku.json():
+            super_id = a.get("_super_id", 1)
+            sku      = a.get("_sku", "")
+            if not sku:
                 continue
-            sku = r_sku.json()[0]["sku_local"]
             attr_a = extraer_atributos(a["nombre"] or "", a.get("marca"))
             attr_b = extraer_atributos(b["nombre"] or "", b.get("marca"))
             sim = similitud_estructurada(a, b, attr_a, attr_b)
             es_confirmado = (a["id"], b["id"]) in pares_set
             body = {
-                "selectos_sku": sku,
-                "producto_id":  b["id"],
-                "confianza":    round(sim, 3),
-                "metodo":       "nlp",
-                "validado":     es_confirmado and not dry_run,
-                "notas":        f"NLP: \"{a['nombre']}\" ↔ \"{b['nombre']}\" (sim={sim:.2f})",
+                "supermercado_id": super_id,
+                "sku_local":       sku,
+                "producto_id":     b["id"],
+                "confianza":       round(sim, 3),
+                "metodo":          "nlp",
+                "validado":        es_confirmado and not dry_run,
+                "notas":           f"NLP: \"{a['nombre']}\" ↔ \"{b['nombre']}\" (sim={sim:.2f})",
             }
             if not dry_run:
                 r_ins = await client.post(
-                    f"{SUPABASE_URL}/rest/v1/mapeo_selectos",
+                    f"{SUPABASE_URL}/rest/v1/mapeo_sku",
                     headers={**HEADERS, "Prefer": "resolution=ignore-duplicates"},
                     json=body,
                 )
                 if r_ins.status_code in (200, 201):
                     guardados += 1
             else:
-                print(f"    [dry-run] Sugerencia: sku={sku} → prod_id={b['id']} "
-                      f"validado={'SI' if es_confirmado else 'PENDIENTE'}")
+                estado = "CONFIRMADO" if es_confirmado else "PENDIENTE"
+                print(f"    [dry-run] super={super_id} sku={sku} → prod_id={b['id']} "
+                      f"sim={sim:.2f} [{estado}]")
                 guardados += 1
-        print(f"  {guardados} sugerencias {'simuladas' if dry_run else 'guardadas en mapeo_selectos'}")
+        print(f"  {guardados} sugerencias {'simuladas' if dry_run else 'guardadas en mapeo_sku'}")
 
         if not confirmados:
             print("  Sin fusiones automáticas. Revisa sugerencias pendientes en el dashboard.")

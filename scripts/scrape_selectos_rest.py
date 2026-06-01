@@ -698,29 +698,32 @@ async def _filtrar_ya_insertados(
     return [p for p in precios_batch if p["variante_id"] not in ya_insertados]
 
 
-async def precargar_mapeo(client: httpx.AsyncClient) -> dict[str, int]:
+async def precargar_mapeo(client: httpx.AsyncClient, super_id: int) -> dict[str, int]:
     """
-    Carga la tabla mapeo_selectos (solo validados=true, rechazado=false).
-    Retorna {selectos_sku → producto_id canónico}.
+    Carga mapeo_sku para este supermercado (solo validados=true, rechazado=false).
+    Retorna {sku_local → producto_id canónico}.
+    Aplica a cualquier tienda sin EAN, no solo Selectos.
     """
     mapeo: dict[str, int] = {}
     try:
         r = await client.get(
-            f"{REST_URL}/mapeo_selectos",
+            f"{REST_URL}/mapeo_sku",
             headers=HEADERS,
             params={
-                "select":    "selectos_sku,producto_id",
-                "validado":  "eq.true",
-                "rechazado": "eq.false",
-                "limit":     "10000",
+                "select":          "sku_local,producto_id",
+                "supermercado_id": f"eq.{super_id}",
+                "validado":        "eq.true",
+                "rechazado":       "eq.false",
+                "limit":           "10000",
             },
         )
         if r.status_code == 200:
             for row in r.json():
-                mapeo[str(row["selectos_sku"])] = row["producto_id"]
-            print(f"  -> Mapeo Selectos cargado: {len(mapeo)} entradas validadas")
+                mapeo[str(row["sku_local"])] = row["producto_id"]
+            if mapeo:
+                print(f"  -> Mapeo validado cargado: {len(mapeo)} entradas (super_id={super_id})")
         else:
-            print(f"  WARN: mapeo_selectos no disponible aún ({r.status_code}) — se usará NLP")
+            print(f"  WARN: mapeo_sku no disponible ({r.status_code}) — se usará NLP")
     except Exception as e:
         print(f"  WARN: error cargando mapeo: {e}")
     return mapeo
@@ -730,7 +733,7 @@ async def guardar_en_supabase(productos: list[dict], super_id: int, client: http
     print("  -> Pre-cargando cache...")
     sku_map, ean_map = await precargar_variantes(client, super_id)
     nombre_map = await precargar_nombres(client)
-    mapeo_validado = await precargar_mapeo(client)  # ← Capa 1b: mapeo manual validado
+    mapeo_validado = await precargar_mapeo(client, super_id)  # ← Capa 1b: mapeo validado
 
     nuevos = actualizados = errores = mapeo_hits = 0
     ahora = datetime.now(timezone.utc).isoformat()

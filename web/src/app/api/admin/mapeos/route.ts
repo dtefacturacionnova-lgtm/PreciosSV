@@ -14,14 +14,15 @@ export async function GET(req: NextRequest) {
   const db = createServiceClient()
 
   let query = (db as any)
-    .from('mapeo_selectos')
+    .from('mapeo_sku')
     .select(`
-      id, selectos_sku, confianza, metodo, validado, rechazado,
+      id, supermercado_id, sku_local, confianza, metodo, validado, rechazado,
       validado_at, notas, created_at,
+      supermercados!inner(id, nombre, nombre_corto, color_hex),
       productos!inner(id, nombre, nombre_normalizado, ean, imagen_url, marca)
     `)
     .order('confianza', { ascending: false })
-    .limit(100)
+    .limit(200)
 
   if (solo === 'pendientes') {
     query = query.eq('validado', false).eq('rechazado', false)
@@ -36,22 +37,23 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { selectos_sku, producto_id, notas } = await req.json()
-  if (!selectos_sku || !producto_id) {
-    return NextResponse.json({ error: 'selectos_sku y producto_id requeridos' }, { status: 400 })
+  const { supermercado_id, sku_local, producto_id, notas } = await req.json()
+  if (!sku_local || !producto_id || !supermercado_id) {
+    return NextResponse.json({ error: 'supermercado_id, sku_local y producto_id requeridos' }, { status: 400 })
   }
   const db = createServiceClient()
   const { data, error } = await (db as any)
-    .from('mapeo_selectos')
+    .from('mapeo_sku')
     .upsert({
-      selectos_sku: String(selectos_sku),
-      producto_id:  Number(producto_id),
-      metodo:       'manual',
-      confianza:    1.0,
-      validado:     true,
-      validado_at:  new Date().toISOString(),
-      notas:        notas ?? 'Validado manualmente',
-    }, { onConflict: 'selectos_sku' })
+      supermercado_id: Number(supermercado_id),
+      sku_local:       String(sku_local),
+      producto_id:     Number(producto_id),
+      metodo:          'manual',
+      confianza:       1.0,
+      validado:        true,
+      validado_at:     new Date().toISOString(),
+      notas:           notas ?? 'Validado manualmente',
+    }, { onConflict: 'supermercado_id,sku_local' })
     .select()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -71,7 +73,7 @@ export async function PATCH(req: NextRequest) {
     : { validado: false, rechazado: true }
 
   const { error } = await (db as any)
-    .from('mapeo_selectos')
+    .from('mapeo_sku')
     .update(update)
     .eq('id', Number(id))
 

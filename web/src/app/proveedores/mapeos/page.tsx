@@ -9,14 +9,20 @@ import { useEffect, useState } from 'react'
 import { Check, X, RefreshCw, Link2, Package, AlertCircle, CheckCircle } from 'lucide-react'
 
 interface Mapeo {
-  id:            number
-  selectos_sku:  string
-  confianza:     number | null
-  metodo:        string
-  validado:      boolean
-  rechazado:     boolean
-  validado_at:   string | null
-  notas:         string | null
+  id:              number
+  supermercado_id: number
+  sku_local:       string
+  confianza:       number | null
+  metodo:          string
+  validado:        boolean
+  rechazado:       boolean
+  validado_at:     string | null
+  notas:           string | null
+  supermercados: {
+    nombre:      string
+    nombre_corto: string
+    color_hex:   string
+  }
   productos: {
     id:                 number
     nombre:             string
@@ -133,11 +139,20 @@ export default function MapeosPage() {
               >
                 <div className="flex flex-col sm:flex-row gap-4 items-start">
 
-                  {/* SKU Selectos */}
+                  {/* SKU tienda origen */}
                   <div className="flex-1">
-                    <p className="text-xs text-slate-400 mb-1">Selectos (SKU: {m.selectos_sku})</p>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: m.supermercados?.color_hex ?? '#94a3b8' }}
+                      />
+                      <p className="text-xs text-slate-400">
+                        {m.supermercados?.nombre ?? `Super ${m.supermercado_id}`}
+                        {' '}· SKU: {m.sku_local}
+                      </p>
+                    </div>
                     <p className="text-sm font-semibold text-red-700 bg-red-50 px-2 py-1 rounded-lg inline-block">
-                      {m.notas?.split('↔')[0]?.replace('NLP:', '').replace(/"/g, '').trim() ?? m.selectos_sku}
+                      {m.notas?.split('↔')[0]?.replace('NLP:', '').replace(/"/g, '').trim() ?? m.sku_local}
                     </p>
                   </div>
 

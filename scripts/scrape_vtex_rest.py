@@ -237,19 +237,45 @@ async def _filtrar_ya_insertados(
     return [p for p in precios_batch if p["variante_id"] not in ya_insertados]
 
 
+async def precargar_mapeo_sku(client: httpx.AsyncClient, super_id: int) -> dict[str, int]:
+    """
+    Carga mapeo_sku validado para este supermercado.
+    Retorna {sku_local → producto_id canónico}.
+    Aplica a CUALQUIER tienda sin EAN, no solo Selectos.
+    """
+    mapeo: dict[str, int] = {}
+    try:
+        rows = await rest_get(client, "mapeo_sku", {
+            "select":          "sku_local,producto_id",
+            "supermercado_id": f"eq.{super_id}",
+            "validado":        "eq.true",
+            "rechazado":       "eq.false",
+            "limit":           "10000",
+        })
+        for r in rows:
+            mapeo[str(r["sku_local"])] = r["producto_id"]
+        if mapeo:
+            print(f"  Mapeo validado: {len(mapeo)} entradas (super_id={super_id})")
+    except Exception as e:
+        print(f"  WARN mapeo_sku: {e}")
+    return mapeo
+
+
 async def guardar_productos(client: httpx.AsyncClient, productos: list[dict], super_map: dict[str, int]) -> dict:
     """
     Para cada producto scraped:
     1. Pre-cargar variantes existentes en memoria (batch query)
     2. Pre-cargar EANs existentes en memoria
-    3. Buscar/crear producto por EAN o nombre_normalizado
-    4. Upsert producto_variante (ON CONFLICT supermercado_id,sku_local)
-    5. Batch-insert precios
-    Retorna resumen { nuevos, actualizados, errores }
+    3. Pre-cargar mapeo_sku validado (para productos sin EAN)
+    4. Buscar/crear producto por: mapeo_sku → EAN → nombre_normalizado → crear nuevo
+    5. Upsert producto_variante (ON CONFLICT supermercado_id,sku_local)
+    6. Batch-insert precios
+    Retorna resumen { nuevos, actualizados, errores, mapeo_hits }
     """
     nuevos = 0
     actualizados = 0
     errores = 0
+    mapeo_hits = 0
     fecha_hora = datetime.now(timezone.utc).isoformat()
 
     super_key = productos[0]["supermercado_key"] if productos else None
@@ -285,6 +311,9 @@ async def guardar_productos(client: httpx.AsyncClient, productos: list[dict], su
             if r.get("ean"):
                 ean_to_prod[r["ean"]] = r["id"]
 
+    # ── Pre-cargar mapeo_sku validado (Capa 1b: mapeo humano) ─────
+    mapeo_validado = await precargar_mapeo_sku(client, super_id)
+
     precios_batch: list[dict] = []
 
     for prod in productos:
@@ -299,8 +328,14 @@ async def guardar_productos(client: httpx.AsyncClient, productos: list[dict], su
             else:
                 # Variante nueva → resolver producto + crear variante
 
-                # 1. Buscar producto por EAN (en cache pre-cargado)
-                producto_id: int | None = ean_to_prod.get(prod["ean"]) if prod.get("ean") else None
+                # 1b. Mapeo validado por usuario (prioridad máxima, sin IA)
+                producto_id: int | None = mapeo_validado.get(sku)
+                if producto_id:
+                    mapeo_hits += 1
+
+                # 1a. Buscar producto por EAN (en cache pre-cargado)
+                if producto_id is None:
+                    producto_id = ean_to_prod.get(prod["ean"]) if prod.get("ean") else None
 
                 # 2. Si no hay EAN match, buscar por nombre normalizado
                 if producto_id is None:
@@ -394,7 +429,9 @@ async def guardar_productos(client: httpx.AsyncClient, productos: list[dict], su
                 print(f"  ⚠ Error insertando precios batch: {e}")
                 errores += len(chunk)
 
-    return {"nuevos": nuevos, "actualizados": actualizados, "errores": errores}
+    if mapeo_hits:
+        print(f"  Mapeo validado aplicado: {mapeo_hits} productos linkeados sin IA")
+    return {"nuevos": nuevos, "actualizados": actualizados, "errores": errores, "mapeo_hits": mapeo_hits}
 
 
 async def refrescar_vista(client: httpx.AsyncClient) -> None:
