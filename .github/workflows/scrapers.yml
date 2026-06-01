@@ -52,7 +52,7 @@ jobs:
   scrape-selectos:
     name: Selectos (Playwright)
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 100
     if: ${{ github.event_name == 'schedule' || github.event.inputs.incluir_selectos == 'true' }}
 
     env:
@@ -60,6 +60,11 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SELECTOS_EMAIL: ${{ secrets.SELECTOS_EMAIL }}
       SELECTOS_PASSWORD: ${{ secrets.SELECTOS_PASSWORD }}
+      # Límites para evitar el kill por timeout de GitHub Actions:
+      # 5 págs/cat × ~25 s/pág = ~125 s/cat máx
+      # 82 min de runtime → break limpio con 18 min de margen antes del kill
+      SELECTOS_MAX_PAGES: '5'
+      SELECTOS_MAX_RUNTIME: '82'
 
     steps:
       - name: Checkout código

@@ -39,6 +39,7 @@ import asyncio
 import os
 import sys
 import io
+import time
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -78,12 +79,16 @@ from playwright.async_api import async_playwright
 
 REST_URL = f"{SUPABASE_URL}/rest/v1"
 
-# Límite de páginas por categoría — evita que categorías "paraguas" (011, 012…)
-# consuman todo el timeout de GitHub Actions (90 min).
-# Cada página tarda ~12s → MAX_PAGES_PER_CAT=8 = ~96s/cat max.
-# Con ~120 categorías: worst-case 120×96s = ~192 min, pero la mayoría
-# de leaf-cats terminan en pag 1-2 porque los prods ya se vieron en la cat padre.
+# Límite de páginas por categoría.
+# Medición real: ~25s/página (no 12s como se estimó antes).
+# En CI se sobreescribe con SELECTOS_MAX_PAGES=5.
 MAX_PAGES_PER_CAT = int(os.environ.get("SELECTOS_MAX_PAGES", "8"))
+
+# Límite de tiempo total de ejecución del crawler (en minutos).
+# Si se alcanza, el BFS para limpiamente y guarda lo acumulado.
+# En CI (timeout=100 min en scrapers.yml) usamos 82 min para tener margen.
+# Localmente: 0 = sin límite.
+MAX_RUNTIME_MIN = int(os.environ.get("SELECTOS_MAX_RUNTIME", "0"))
 
 HEADERS = {
     "apikey":        SERVICE_KEY,
@@ -388,6 +393,11 @@ async def scrape_selectos(
     cat_root_map: dict[str, str] = {cat: cat for cat in CATEGORIAS_RAIZ}
     _flush_buffer: list[dict] = []  # productos pendientes de guardar
 
+    # Límite de tiempo de ejecución — para que el scraper termine limpiamente
+    # antes de que GitHub Actions lo mate con SIGTERM.
+    _t0 = time.monotonic()
+    _deadline = (_t0 + MAX_RUNTIME_MIN * 60) if MAX_RUNTIME_MIN > 0 else None
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
@@ -428,6 +438,13 @@ async def scrape_selectos(
               f"({len(cats_pendientes)} total pendientes)")
 
         while cats_pendientes:
+            # Chequeo de tiempo — parar limpiamente antes del timeout de CI
+            if _deadline and time.monotonic() >= _deadline:
+                mins = round((time.monotonic() - _t0) / 60, 1)
+                print(f"\n  ⏱  Límite de tiempo alcanzado ({mins} min). "
+                      f"Faltan {len(cats_pendientes)} categorías — guardando y saliendo...")
+                break
+
             cat_id = cats_pendientes.pop(0)
             if cat_id in cats_visitadas:
                 continue
